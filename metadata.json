@@ -1,0 +1,6 @@
+{
+  "name": "Xiaohongshu AI Content Sync",
+  "description": "A high-fidelity content creation tool for AI/Vibe Coding bloggers on Xiaohongshu. Generates structured captions and Twitter-style card images.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI Content Generation", "Image Export"]
+}

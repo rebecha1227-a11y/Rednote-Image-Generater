@@ -1,0 +1,393 @@
+import React, { useState, useRef } from 'react';
+import { useDropzone } from 'react-dropzone';
+import { toPng } from 'html-to-image';
+import { 
+  Upload, 
+  Sparkles, 
+  Download, 
+  Plus, 
+  Trash2, 
+  Clipboard, 
+  ChevronRight,
+  Eye,
+  Type,
+  Image as ImageIcon
+} from 'lucide-react';
+import { TweetCard } from './components/TweetCard';
+
+export default function App() {
+  const [ideas, setIdeas] = useState('');
+  const [links, setLinks] = useState('');
+  const [images, setImages] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiConfig, setApiConfig] = useState({
+    provider: 'gemini', // 'gemini' or 'openai'
+    apiKey: '',
+    baseUrl: '',
+    model: ''
+  });
+  const [result, setResult] = useState<{
+    caption: string;
+    cards: { title: string; subtitle?: string; content: string; imageIndex?: number; isCover?: boolean }[];
+    tags: string[];
+  } | null>(null);
+
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  const onDrop = (acceptedFiles: File[]) => {
+    acceptedFiles.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImages(prev => [...prev, reader.result as string]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { 'image/*': [] } });
+
+  const handleGenerate = async () => {
+    if (!ideas) return;
+    setLoading(true);
+    try {
+      const prompt = `你是一个小红书爆款博主，擅长AI/Vibe Coding领域。
+      请根据以下想法、参考链接和图片，生成一篇小红书笔记素材。
+      
+      想法: ${ideas}
+      参考链接: ${links}
+      
+      输出必须是JSON格式：
+      {
+        "caption": "符合要求的文案正文",
+        "tags": ["标签1", "标签2"],
+        "cards": [
+          { "title": "封面大标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
+          { "title": "步骤1标题", "content": "步骤1详细描述", "imageIndex": 1 }
+        ]
+      }
+      
+      文案要求：
+      1. 开头2行钩子
+      2. 编号讲步骤
+      3. 有个人判断和边界
+      4. 说适合谁，不适合谁
+      5. 结尾给收藏理由
+      
+      卡片要求：
+      1. 第一张必为封面 (isCover: true)
+      2. 后续为内容页
+      3. 每张卡片内容精炼，不超过手机阅读负担
+      4. imageIndex 是输入图片数组的索引，如果没有合适图片可不填
+      `;
+
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          prompt, 
+          images,
+          config: apiConfig.provider === 'openai' ? {
+            apiKey: apiConfig.apiKey,
+            baseUrl: apiConfig.baseUrl,
+            model: apiConfig.model
+          } : null
+        })
+      });
+      const data = await response.json();
+      setResult(data);
+    } catch (error) {
+      console.error(error);
+      alert('生成失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportImages = async () => {
+    if (!result) return;
+    for (let i = 0; i < result.cards.length; i++) {
+      const el = cardRefs.current[i];
+      if (el) {
+        // We need to render the card at its full size (1080x1440) for export
+        // but the preview is scaled down. 
+        // Part of the trick is that html-to-image takes the actual DOM dimensions.
+        const dataUrl = await toPng(el, { 
+          pixelRatio: 1,
+          width: 1080,
+          height: 1440,
+        });
+        const link = document.createElement('a');
+        link.download = `card-${i + 1}.png`;
+        link.href = dataUrl;
+        link.click();
+      }
+    }
+  };
+
+  const copyCaption = () => {
+    if (!result) return;
+    const text = `${result.caption}\n\n${result.tags.map(t => `#${t}`).join(' ')}`;
+    navigator.clipboard.writeText(text);
+    alert('已复制到剪贴板');
+  };
+
+  return (
+    <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden select-none">
+      {/* Top Navigation Tool Bar */}
+      <nav className="h-14 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center text-white font-bold text-xl ring-2 ring-red-100">J</div>
+          <span className="font-bold tracking-tight text-lg">Jinger's Vibe Coding Editor <span className="text-xs font-normal text-gray-400 ml-1 italic font-mono">v1.0.4</span></span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex -space-x-2">
+            <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-100"></div>
+            <div className="w-8 h-8 rounded-full border-2 border-white bg-green-100"></div>
+            <div className="w-8 h-8 rounded-full border-2 border-white bg-purple-100 shadow-sm"></div>
+          </div>
+          {result && (
+            <button 
+              onClick={exportImages}
+              className="px-6 py-2 bg-red-500 text-white text-sm font-bold rounded-full hover:bg-red-600 shadow-lg shadow-red-100 transition-all flex items-center gap-2 active:scale-95"
+            >
+              <Download className="w-4 h-4" />
+              <span>一键导出所有卡片 (PNG)</span>
+            </button>
+          )}
+        </div>
+      </nav>
+
+      <main className="flex-1 flex overflow-hidden">
+        {/* Sidebar: Input Controls */}
+        <aside className="w-96 bg-white border-r border-gray-200 p-6 flex flex-col gap-8 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+          {/* API Settings Section */}
+          <section className="bg-gray-50 -mx-6 -mt-6 p-6 border-b border-gray-200">
+            <button 
+              onClick={() => setShowSettings(!showSettings)}
+              className="flex items-center justify-between w-full text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 hover:text-black transition-colors"
+            >
+              <span>API 设置 / SETTINGS</span>
+              <Plus className={`w-3 h-3 transition-transform ${showSettings ? 'rotate-45' : ''}`} />
+            </button>
+            {showSettings && (
+              <div className="space-y-4 pt-2">
+                 <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
+                   <button 
+                    onClick={() => setApiConfig({...apiConfig, provider: 'gemini'})}
+                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'gemini' ? 'bg-black text-white' : 'text-gray-400'}`}
+                   >Gemini</button>
+                   <button 
+                    onClick={() => setApiConfig({...apiConfig, provider: 'openai'})}
+                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'openai' ? 'bg-black text-white' : 'text-gray-400'}`}
+                   >Custom API</button>
+                 </div>
+                 
+                 {apiConfig.provider === 'openai' && (
+                   <div className="space-y-2">
+                     <input 
+                       type="password" 
+                       placeholder="API Key" 
+                       value={apiConfig.apiKey}
+                       onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
+                       className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                     />
+                     <input 
+                       type="text" 
+                       placeholder="Base URL (e.g. https://api.deepseek.com/v1)" 
+                       value={apiConfig.baseUrl}
+                       onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})}
+                       className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                     />
+                     <input 
+                       type="text" 
+                       placeholder="Model (e.g. deepseek-chat)" 
+                       value={apiConfig.model}
+                       onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
+                       className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                     />
+                     <p className="text-[9px] text-gray-400 font-medium">提示: 如果留空，将使用后端环境变量配置。</p>
+                   </div>
+                 )}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <Type className="w-3 h-3" />
+              内容配置 / CONTENT
+            </h3>
+            <div className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-gray-500 ml-1 uppercase">灵感想法</label>
+                <textarea
+                  value={ideas}
+                  onChange={(e) => setIdeas(e.target.value)}
+                  placeholder="输入你的AI见解、工具介绍或Skill介绍..."
+                  className="w-full h-32 text-sm border border-gray-200 rounded-xl p-4 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all resize-none leading-relaxed bg-gray-50/30"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-gray-500 ml-1 uppercase">参考链接</label>
+                <div className="relative">
+                  <Clipboard className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={links}
+                    onChange={(e) => setLinks(e.target.value)}
+                    placeholder="参考链接 (可选)..."
+                    className="w-full text-sm border border-gray-200 rounded-xl p-3 pl-10 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all bg-gray-50/30"
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <ImageIcon className="w-3 h-3" />
+              截图素材 / ASSETS ({images.length})
+            </h3>
+            <div 
+              {...getRootProps()} 
+              className={`border-2 border-dashed rounded-2xl p-6 transition-all cursor-pointer flex flex-col items-center justify-center gap-2
+                ${isDragActive ? 'border-red-400 bg-red-50/30' : 'border-gray-200 hover:border-gray-300 bg-gray-50/30 hover:bg-white'}
+              `}
+            >
+              <input {...getInputProps()} />
+              <div className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400">
+                <Upload className="w-5 h-5" />
+              </div>
+              <p className="text-[11px] font-bold text-gray-400 text-center">点击或拖拽上传</p>
+            </div>
+
+            {images.length > 0 && (
+              <div className="grid grid-cols-4 gap-2 mt-4">
+                {images.map((img, i) => (
+                  <div key={i} className="relative aspect-square rounded-lg overflow-hidden border border-gray-100 group shadow-sm">
+                    <img src={img} className="w-full h-full object-cover" />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setImages(prev => prev.filter((_, idx) => idx !== i)); }}
+                      className="absolute inset-0 bg-red-500/80 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <button
+            onClick={handleGenerate}
+            disabled={loading || !ideas}
+            className="w-full bg-red-500 text-white py-4 rounded-full font-bold flex items-center justify-center gap-2 hover:bg-red-600 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed transition-all shadow-lg shadow-red-100 active:scale-95"
+          >
+            {loading ? (
+              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                <span>生成全套素材 / GENERATE</span>
+              </>
+            )}
+          </button>
+
+          {result && (
+            <section className="flex-1 mt-auto">
+              <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">小红书正文预览 / XHS COPY</h3>
+              <div className="bg-gray-50 p-4 rounded-xl h-[280px] overflow-hidden flex flex-col border border-dashed border-gray-300 relative group">
+                <div className="text-[12px] text-gray-800 leading-relaxed whitespace-pre-wrap flex-1 overflow-y-auto scrollbar-hide">
+                  {result.caption}
+                  <div className="mt-4 flex flex-wrap gap-1">
+                    {result.tags.map(t => <span key={t} className="text-red-500 font-bold">#{t}</span>)}
+                  </div>
+                </div>
+                <button 
+                  onClick={copyCaption}
+                  className="absolute bottom-3 right-3 p-2 bg-white rounded-lg shadow-md border border-gray-100 text-gray-500 hover:text-red-500 transition-colors"
+                >
+                  <Clipboard className="w-4 h-4" />
+                </button>
+              </div>
+            </section>
+          )}
+        </aside>
+
+        {/* Main Workspace: Card Previews */}
+        <section className="flex-1 p-8 overflow-y-auto relative flex flex-col items-center bg-[#f3f4f6]">
+          <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black text-gray-400 uppercase tracking-widest">
+            <span className="text-red-500 border-b-2 border-red-500 pb-1 cursor-default">预览模式 / PREVIEW</span>
+            <span className="hover:text-gray-800 cursor-pointer transition-colors">导出历史 / HISTORY</span>
+          </div>
+
+          {!result ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-gray-300 space-y-4">
+              <div className="w-16 h-16 bg-white rounded-3xl shadow-sm flex items-center justify-center animate-bounce">
+                <Sparkles className="w-8 h-8 text-gray-200" />
+              </div>
+              <p className="font-black text-xs uppercase tracking-[0.2em] italic">Waiting for Magic...</p>
+            </div>
+          ) : (
+            <div className="w-full max-w-5xl mt-12 grid grid-cols-2 gap-12 items-start pb-24">
+              {result.cards.map((card, i) => (
+                <div key={i} className="flex flex-col items-center gap-6 group">
+                   <div className="aspect-[3/4] bg-white rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] overflow-hidden relative border border-white/50 ring-1 ring-black/5">
+                      <div className="w-[1080px] h-[1440px] origin-top-left scale-[0.4]">
+                        <TweetCard
+                          ref={el => (cardRefs.current[i] = el)}
+                          index={i + 1}
+                          total={result.cards.length}
+                          title={card.title}
+                          subtitle={card.subtitle}
+                          content={card.content}
+                          isCover={card.isCover}
+                          image={card.imageIndex !== undefined ? images[card.imageIndex] : undefined}
+                          className="scale-100"
+                        />
+                      </div>
+                   </div>
+                   <div className="flex items-center gap-3">
+                      <div className="px-3 py-1 bg-white border border-gray-200 text-[10px] font-black text-gray-400 rounded-lg shadow-sm">
+                        {card.isCover ? 'COVER PAGE' : `STEP ${i}`}
+                      </div>
+                      <div className="px-3 py-1 bg-black text-white text-[10px] font-mono font-bold rounded-lg shadow-lg">
+                        {i + 1} / {result.cards.length}
+                      </div>
+                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Overlay Hint */}
+          <div className="fixed bottom-12 left-1/2 -translate-x-[calc(50%-180px)] xl:-translate-x-[calc(50%-192px)] flex items-center gap-3 px-5 py-2.5 bg-white/90 backdrop-blur-md rounded-full shadow-2xl border border-white/50 z-20 transition-all hover:scale-105">
+            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+            <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">
+              Live Rendering: 1080 × 1440 HD Output
+            </span>
+          </div>
+        </section>
+      </main>
+
+      {/* Bottom Status Bar */}
+      <footer className="h-8 bg-white border-t border-gray-200 px-6 flex items-center justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest shrink-0">
+        <div className="flex gap-6">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+            <span>SYSTEM: SYNCING CONTENT</span>
+          </div>
+          <span>FORMAT: 3:4 VERTICAL HD</span>
+        </div>
+        <div className="flex gap-6 items-center">
+          <span>VIBE CODING ENGINE ACTIVE</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-red-500 animate-pulse text-lg">●</span>
+            <span className="mt-0.5">RECORDING UI CHANGES</span>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
