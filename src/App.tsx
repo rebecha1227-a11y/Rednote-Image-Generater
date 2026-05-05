@@ -520,8 +520,8 @@ export default function App() {
             <div className="w-full max-w-5xl mt-12 grid grid-cols-2 gap-12 items-start pb-24">
               {result.cards.map((card, i) => (
                 <div key={i} className="flex flex-col items-center gap-6 group">
-                   <div className="aspect-[3/4] bg-white rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] overflow-hidden relative border border-white/50 ring-1 ring-black/5">
-                      <div className="w-[1080px] h-[1440px] origin-top-left scale-[0.4]">
+                   <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{width: '378px', height: '504px'}}>
+                      <div className="absolute top-0 left-0 w-[1080px] h-[1440px] origin-top-left" style={{transform: 'scale(0.35)'}}>
                         <TweetCard
                           ref={el => (cardRefs.current[i] = el)}
                           index={i + 1}

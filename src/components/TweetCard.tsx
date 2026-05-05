@@ -126,11 +126,11 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
             </div>
           </div>
         ) : (
-          <div className="flex flex-col h-full">
-            <h2 className="text-[64px] font-black leading-tight mb-12 text-gray-900 tracking-tighter">
+          <div className="flex flex-col h-full min-h-0">
+            <h2 className="text-[64px] font-black leading-tight mb-12 text-gray-900 tracking-tighter shrink-0">
               {title}
             </h2>
-            <div className="text-[44px] leading-[1.5] text-gray-700 whitespace-pre-wrap flex-1 font-bold tracking-tight bg-gray-50/30 p-10 rounded-[40px] border border-dashed border-gray-200">
+            <div className="text-[44px] leading-[1.5] text-gray-700 whitespace-pre-wrap flex-1 min-h-0 overflow-hidden font-bold tracking-tight bg-gray-50/30 p-10 rounded-[40px] border border-dashed border-gray-200">
               {content}
             </div>
             
