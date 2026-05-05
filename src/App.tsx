@@ -17,7 +17,7 @@ import { TweetCard } from './components/TweetCard';
 
 export default function App() {
   const [ideas, setIdeas] = useState('');
-  const [links, setLinks] = useState('');
+  const [links, setLinks] = useState<string[]>(['']);
   const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -47,25 +47,20 @@ export default function App() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { 'image/*': [] } });
 
+  const handleAddLink = () => setLinks([...links, '']);
+  const handleRemoveLink = (index: number) => setLinks(links.filter((_, i) => i !== index));
+  const handleLinkChange = (index: number, value: string) => {
+    const newLinks = [...links];
+    newLinks[index] = value;
+    setLinks(newLinks);
+  };
+
   const handleGenerate = async () => {
     if (!ideas) return;
     setLoading(true);
     try {
-      const prompt = `你是一个小红书爆款博主，擅长AI/Vibe Coding领域。
-      请根据以下想法、参考链接和图片，生成一篇小红书笔记素材。
-      
-      想法: ${ideas}
-      参考链接: ${links}
-      
-      输出必须是JSON格式：
-      {
-        "caption": "符合要求的文案正文",
-        "tags": ["标签1", "标签2"],
-        "cards": [
-          { "title": "封面大标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
-          { "title": "步骤1标题", "content": "步骤1详细描述", "imageIndex": 1 }
-        ]
-      }
+      const promptText = `你是一个小红书爆款博主，擅长AI/Vibe Coding领域。
+      请根据提供的信息生成一篇小红书笔记素材。
       
       文案要求：
       1. 开头2行钩子
@@ -79,14 +74,25 @@ export default function App() {
       2. 后续为内容页
       3. 每张卡片内容精炼，不超过手机阅读负担
       4. imageIndex 是输入图片数组的索引，如果没有合适图片可不填
+      
+      输出必须是JSON格式：
+      {
+        "caption": "符合要求的文案正文",
+        "tags": ["标签1", "标签2"],
+        "cards": [
+          { "title": "封面大标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
+          { "title": "步骤1标题", "content": "步骤1详细描述", "imageIndex": 1 }
+        ]
+      }
       `;
 
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          prompt, 
+          prompt: `核心想法: ${ideas}\n\n指令: ${promptText}`,
           images,
+          links: links.filter(l => l.trim().startsWith('http')),
           config: apiConfig.provider === 'openai' ? {
             apiKey: apiConfig.apiKey,
             baseUrl: apiConfig.baseUrl,
@@ -95,10 +101,11 @@ export default function App() {
         })
       });
       const data = await response.json();
+      if (data.error) throw new Error(data.details || data.error);
       setResult(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      alert('生成失败');
+      alert('生成失败: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -229,16 +236,38 @@ export default function App() {
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-gray-500 ml-1 uppercase">参考链接</label>
-                <div className="relative">
-                  <Clipboard className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    value={links}
-                    onChange={(e) => setLinks(e.target.value)}
-                    placeholder="参考链接 (可选)..."
-                    className="w-full text-sm border border-gray-200 rounded-xl p-3 pl-10 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all bg-gray-50/30"
-                  />
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-[11px] font-bold text-gray-500 uppercase">参考链接 / LINKS</label>
+                  <button 
+                    onClick={handleAddLink}
+                    className="p-1 bg-gray-100 hover:bg-black hover:text-white rounded-md transition-all"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {links.map((link, idx) => (
+                    <div key={idx} className="relative flex items-center gap-2 group">
+                      <div className="relative flex-1">
+                        <Clipboard className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
+                        <input
+                          type="text"
+                          value={link}
+                          onChange={(e) => handleLinkChange(idx, e.target.value)}
+                          placeholder="https://..."
+                          className="w-full text-[12px] border border-gray-200 rounded-xl p-2.5 pl-9 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all bg-gray-50/30"
+                        />
+                      </div>
+                      {links.length > 1 && (
+                        <button 
+                          onClick={() => handleRemoveLink(idx)}
+                          className="p-1.5 text-gray-300 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
