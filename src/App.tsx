@@ -92,7 +92,17 @@ export default function App() {
   };
   const [result, setResult] = useState<{
     caption: string;
-    cards: { title: string; subtitle?: string; content: string; imageIndex?: number; isCover?: boolean }[];
+    cards: {
+      title: string;
+      subtitle?: string;
+      content: string;
+      imageIndex?: number;
+      isCover?: boolean;
+      layout?: 'text' | 'list' | 'terminal' | 'grid';
+      listItems?: string[];
+      terminalLines?: { type: string; text: string }[];
+      gridItems?: { name: string; desc: string }[];
+    }[];
     tags: string[];
   } | null>(null);
 
@@ -108,7 +118,7 @@ export default function App() {
     });
   };
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { 'image/*': [] } });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { 'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp'] } } as any);
 
   const handleAddLink = () => setLinks([...links, '']);
   const handleRemoveLink = (index: number) => setLinks(links.filter((_, i) => i !== index));
@@ -147,28 +157,91 @@ export default function App() {
         "caption": "符合风格的文案正文",
         "tags": ["标签1", "标签2"],
         "cards": [
-          { "title": "封面标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
-          { "title": "卡片1标题", "content": "卡片1内容", "imageIndex": 1 }
+          {
+            "title": "封面标题",
+            "subtitle": "封面副标题",
+            "content": "",
+            "isCover": true,
+            "layout": "cover",
+            "imageIndex": 0
+          },
+          {
+            "title": "卡片标题",
+            "content": "卡片正文（支持<highlight>荧光笔</highlight>和<tag>蓝色标签</tag>）",
+            "layout": "text",
+            "listItems": ["列表项1", "列表项2"],
+            "terminalLines": [
+              {"type": "command", "text": "npm install"},
+              {"type": "output", "text": "installing..."},
+              {"type": "success", "text": "Done!"}
+            ],
+            "gridItems": [
+              {"name": "/command", "desc": "描述"}
+            ]
+          }
         ]
       }
+
+      layout 可选值：text（纯文本）、list（带编号列表）、terminal（终端窗口）、grid（命令网格）。
+      text 类型用 content 字段；list 类型用 listItems 字段加 content 作为小标题；terminal 类型用 terminalLines 字段；grid 类型用 gridItems 字段。
+      第一张卡片 layout 固定为 cover。
       `;
 
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: `核心想法: ${ideas}\n\n指令: ${promptText}`,
           images,
           links: links.filter(l => l.trim().startsWith('http')),
           config: apiConfig
         })
       });
-      const data = await response.json();
-      if (data.error) {
-        setErrorMsg({ title: data.error, detail: data.details || "由于 API 限制，生成未能成功" });
-        return;
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `服务器错误 (HTTP ${response.status})`);
       }
-      setResult(data);
+
+      // SSE 流式读取——服务器会边等 AI 回复边发 ping 保活，避免 Railway 30 秒超时
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('浏览器不支持流式读取');
+
+      const decoder = new TextDecoder();
+      let chunk = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunk += decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        chunk = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.error) {
+                setErrorMsg({ title: data.error, detail: data.details || "由于 API 限制，生成未能成功" });
+                return;
+              }
+              setResult(data);
+              return;
+            } catch (_) { /* 还没收完，继续读 */ }
+          }
+        }
+      }
+
+      // 流结束了但没收到有效数据——尝试当普通 JSON 解析
+      try {
+        const data = JSON.parse(chunk);
+        if (data.error) {
+          setErrorMsg({ title: data.error, detail: data.details || "生成失败" });
+        } else {
+          setResult(data);
+        }
+      } catch (_) {
+        setErrorMsg({ title: "生成失败", detail: "服务器响应异常，请重试" });
+      }
     } catch (error: any) {
       console.error(error);
       setErrorMsg({ title: "生成失败", detail: error.message });
@@ -185,10 +258,10 @@ export default function App() {
         // We need to render the card at its full size (1080x1440) for export
         // but the preview is scaled down. 
         // Part of the trick is that html-to-image takes the actual DOM dimensions.
-        const dataUrl = await toPng(el, { 
+        const dataUrl = await toPng(el, {
           pixelRatio: 1,
-          width: 1080,
-          height: 1440,
+          width: 1242,
+          height: 1660,
         });
         const link = document.createElement('a');
         link.download = `card-${i + 1}.png`;
@@ -531,8 +604,8 @@ export default function App() {
             <div className="w-full max-w-lg mt-12 flex flex-col gap-12 items-center pb-24">
               {result.cards.map((card, i) => (
                 <div key={i} className="flex flex-col items-center gap-6 group">
-                   <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{width: '378px', height: '504px'}}>
-                      <div className="absolute top-0 left-0 w-[1080px] h-[1440px] origin-top-left" style={{transform: 'scale(0.35)'}}>
+                   <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{width: '434px', height: '581px'}}>
+                      <div className="absolute top-0 left-0 w-[1242px] h-[1660px] origin-top-left" style={{transform: 'scale(0.35)'}}>
                         <TweetCard
                           ref={el => (cardRefs.current[i] = el)}
                           index={i + 1}
@@ -541,6 +614,10 @@ export default function App() {
                           subtitle={card.subtitle}
                           content={card.content}
                           isCover={card.isCover}
+                          layout={card.layout}
+                          listItems={card.listItems}
+                          terminalLines={card.terminalLines}
+                          gridItems={card.gridItems}
                           image={card.imageIndex !== undefined ? images[card.imageIndex] : undefined}
                           authorInfo={authorInfo}
                           className="scale-100"

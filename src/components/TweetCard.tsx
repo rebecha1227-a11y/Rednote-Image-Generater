@@ -1,13 +1,7 @@
 import { forwardRef } from 'react';
+import { MoreHorizontal, Sparkles } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { 
-  MoreHorizontal, 
-  MessageCircle, 
-  Heart, 
-  BarChart3, 
-  Sparkles 
-} from 'lucide-react';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -21,6 +15,10 @@ interface CardProps {
   content: string;
   image?: string;
   isCover?: boolean;
+  layout?: 'text' | 'list' | 'terminal' | 'grid';
+  listItems?: string[];
+  terminalLines?: { type: string; text: string }[];
+  gridItems?: { name: string; desc: string }[];
   authorInfo?: {
     name: string;
     handle: string;
@@ -28,6 +26,285 @@ interface CardProps {
   };
   className?: string;
 }
+
+/* ——— Twitter/X 风格 SVG 图标 ——— */
+
+function IconReply() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-7 h-7 fill-none stroke-[#536471] stroke-[1.8] stroke-linecap-round stroke-linejoin-round">
+      <path d="M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.25-.893 4.306-2.394 5.862l-3.609 3.742c-.305.316-.757.428-1.166.295-.41-.133-.69-.506-.69-.94v-3.32a.752.752 0 00-.75-.75H9.756c-4.421 0-8.005-3.58-8.005-8.02z" />
+    </svg>
+  );
+}
+
+function IconRetweet() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-7 h-7 fill-none stroke-[#536471] stroke-[1.8] stroke-linecap-round stroke-linejoin-round">
+      <path d="M4.5 3.88l4.432 4.14-1.364 1.46L5.5 7.55V16c0 1.1.896 2 2 2h4v2h-4c-2.209 0-4-1.79-4-4V7.55L1.432 9.48.068 8.02 4.5 3.88zM19.5 20.12l-4.432-4.14 1.364-1.46L18.5 16.45V8c0-1.1-.896-2-2-2h-4V4h4c2.209 0 4 1.79 4 4v8.45l2.068-1.93 1.364 1.46-4.432 4.14z" />
+    </svg>
+  );
+}
+
+function IconHeart() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-7 h-7 fill-none stroke-[#536471] stroke-[1.8] stroke-linecap-round stroke-linejoin-round">
+      <path d="M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.807 1.1-.806-1.1C10.082 6.01 8.625 5.44 7.403 5.5 5.203 5.56 3.5 7.38 3.5 9.58c0 3.54 3.94 6.97 7.737 9.87.276.21.592.32.763.32.17 0 .488-.11.763-.32C16.56 16.55 20.5 13.12 20.5 9.58c0-2.2-1.703-4.02-3.803-4.08z" />
+    </svg>
+  );
+}
+
+function IconBookmark() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-7 h-7 fill-none stroke-[#536471] stroke-[1.8] stroke-linecap-round stroke-linejoin-round">
+      <path d="M4 4.5C4 3.12 5.119 2 6.5 2h11C18.881 2 20 3.12 20 4.5v18.44l-8-5.71-8 5.71V4.5z" />
+    </svg>
+  );
+}
+
+function IconShare() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-7 h-7 fill-none stroke-[#536471] stroke-[1.8] stroke-linecap-round stroke-linejoin-round">
+      <path d="M12 2.59l5.7 5.7-1.41 1.42L13 6.41V16h-2V6.41l-3.3 3.3-1.41-1.42L12 2.59zM21 15l-.02 3.51c0 1.38-1.12 2.49-2.5 2.49H5.5C4.11 21 3 19.88 3 18.5V15h2v3.5c0 .28.22.5.5.5h13c.28 0 .5-.22.5-.5V15h2z" />
+    </svg>
+  );
+}
+
+/* ——— 布局渲染函数 ——— */
+
+interface RenderCtx {
+  title: string;
+  content: string;
+  image?: string;
+  subtitle?: string;
+  listItems?: string[];
+  terminalLines?: { type: string; text: string }[];
+  gridItems?: { name: string; desc: string }[];
+}
+
+function renderHighlightText(text: string) {
+  // 支持 <highlight>text</highlight> → 荧光笔效果
+  // 支持 <tag>text</tag> → 蓝色标签
+  const html = text
+    .replace(/<highlight>(.*?)<\/highlight>/g, '<span class="highlight-bg">$1</span>')
+    .replace(/<tag>(.*?)<\/tag>/g, '<span class="tag-blue">$1</span>');
+  return html;
+}
+
+function renderCover(ctx: RenderCtx) {
+  const { title, subtitle, content, image } = ctx;
+  return (
+    <div className="flex flex-col h-full" style={{ justifyContent: 'flex-start', gap: 0 }}>
+      <div
+        className="text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2"
+        style={{ letterSpacing: '-0.04em', lineHeight: 1.15 }}
+      >
+        {title}
+      </div>
+
+      {subtitle && (
+        <div className="text-[30px] text-[#536471] mt-4 leading-snug">
+          {subtitle}
+        </div>
+      )}
+
+      {/* 图片堆叠区域 */}
+      <div className="relative w-full mt-7" style={{ height: '580px' }}>
+        {image ? (
+          <>
+            <img
+              src={image}
+              className="absolute rounded-[20px] object-cover shadow-lg border border-gray-200"
+              style={{
+                width: '55%', height: '90%', top: '5%', left: 0,
+                zIndex: 2, transform: 'rotate(-2deg)'
+              }}
+              alt=""
+            />
+            <div
+              className="absolute rounded-[20px] border border-gray-200 shadow-lg"
+              style={{
+                width: '55%', height: '90%', top: 0, right: 0,
+                zIndex: 1, transform: 'rotate(2deg)',
+                background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)'
+              }}
+            />
+          </>
+        ) : (
+          <>
+            <div
+              className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center"
+              style={{
+                width: '55%', height: '90%', top: '5%', left: 0,
+                zIndex: 2, transform: 'rotate(-2deg)',
+                background: 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)'
+              }}
+            >
+              <Sparkles className="w-32 h-32 text-red-200" />
+            </div>
+            <div
+              className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center"
+              style={{
+                width: '55%', height: '90%', top: 0, right: 0,
+                zIndex: 1, transform: 'rotate(2deg)',
+                background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)'
+              }}
+            >
+              <Sparkles className="w-28 h-28 text-yellow-300" />
+            </div>
+          </>
+        )}
+
+        {/* 装饰元素 */}
+        <svg className="absolute w-12 h-12 z-3" style={{ top: '8%', right: '12%' }} viewBox="0 0 24 24" fill="#fbbf24">
+          <path d="M12 2l2.4 7.2L22 9.5l-5.8 5.1 1.7 7.4L12 17.8 6.1 22l1.7-7.4L2 9.5l7.6-.3L12 2z" />
+        </svg>
+        <div
+          className="absolute z-3 bg-[#0f1419] text-white font-bold px-5 py-2.5 rounded-xl text-xl whitespace-nowrap tracking-wide"
+          style={{ bottom: '12%', left: '8%' }}
+        >
+          AI VIBE CODING
+        </div>
+        <div className="absolute z-3 w-4 h-4 rounded-full bg-[#f38ba8]" style={{ top: '18%', left: '62%' }} />
+        <div className="absolute z-3 w-3 h-3 rounded-full bg-[#89b4fa]" style={{ top: '14%', left: '68%' }} />
+      </div>
+    </div>
+  );
+}
+
+function renderText(ctx: RenderCtx) {
+  return (
+    <>
+      <h2
+        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
+        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
+      >
+        {ctx.title}
+      </h2>
+      <div
+        className="flex-1 min-h-0 overflow-hidden"
+        style={{ fontSize: '36px', color: '#0f1419', lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }}
+        dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
+      />
+      {ctx.image && (
+        <div className="mt-6 mb-4 rounded-3xl overflow-hidden shadow-lg border-4 border-white">
+          <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
+        </div>
+      )}
+    </>
+  );
+}
+
+function renderList(ctx: RenderCtx) {
+  const items = ctx.listItems || ctx.content.split('\n').filter(Boolean);
+  return (
+    <>
+      <h2
+        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
+        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
+      >
+        {ctx.title}
+      </h2>
+      <div
+        className="text-[36px] text-[#0f1419] mb-6 shrink-0"
+        style={{ lineHeight: 1.65 }}
+        dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
+      />
+      <div className="flex flex-col gap-5 flex-1 overflow-hidden">
+        {items.map((item, i) => (
+          <div key={i} className="flex gap-4 items-start">
+            <div
+              className="w-9 h-9 rounded-full bg-[#0f1419] flex items-center justify-center text-white font-bold shrink-0 mt-1"
+              style={{ fontSize: '18px' }}
+            >
+              {i + 1}
+            </div>
+            <div className="text-[28px] text-[#0f1419] leading-relaxed" style={{ wordBreak: 'keep-all' }}>
+              {item}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function renderTerminal(ctx: RenderCtx) {
+  const lines = ctx.terminalLines || [];
+  return (
+    <>
+      {ctx.title && (
+        <h2
+          className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
+          style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
+        >
+          {ctx.title}
+        </h2>
+      )}
+      {ctx.content && (
+        <div
+          className="text-[36px] text-[#0f1419] mb-6 shrink-0"
+          style={{ lineHeight: 1.65 }}
+          dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
+        />
+      )}
+      <div className="rounded-[20px] overflow-hidden shadow-lg shrink-0" style={{ background: '#1e1e2e' }}>
+        <div className="flex items-center gap-2.5 px-5 py-4" style={{ background: '#313244' }}>
+          <div className="w-4 h-4 rounded-full bg-[#f38ba8]" />
+          <div className="w-4 h-4 rounded-full bg-[#f9e2af]" />
+          <div className="w-4 h-4 rounded-full bg-[#a6e3a1]" />
+          <div className="flex-1 text-center text-lg text-[#6c7086]">Terminal — zsh</div>
+        </div>
+        <div className="px-9 py-8 font-mono text-[26px] leading-relaxed" style={{ color: '#cdd6f4' }}>
+          {lines.length > 0 ? lines.map((l, i) => {
+            let colorClass = '';
+            let prefix = '';
+            switch (l.type) {
+              case 'command': colorClass = 'text-[#89b4fa]'; prefix = '~ '; break;
+              case 'output': colorClass = 'text-[#6c7086]'; break;
+              case 'success': colorClass = 'text-[#a6e3a1]'; prefix = '✓ '; break;
+              case 'prompt': colorClass = 'text-[#a6e3a1]'; break;
+              default: colorClass = 'text-[#6c7086]';
+            }
+            return <div key={i} className={colorClass}>{prefix}{l.text}</div>;
+          }) : (
+            <div className="text-[#6c7086]">No output</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function renderGrid(ctx: RenderCtx) {
+  const items = ctx.gridItems || [];
+  return (
+    <>
+      <h2
+        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
+        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
+      >
+        {ctx.title}
+      </h2>
+      {ctx.content && (
+        <div
+          className="text-[36px] text-[#0f1419] mb-6 shrink-0"
+          style={{ lineHeight: 1.65 }}
+          dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
+        />
+      )}
+      <div className="grid grid-cols-2 gap-5 flex-1 overflow-hidden content-start">
+        {items.map((item, i) => (
+          <div key={i} className="rounded-[20px] p-7 border" style={{ background: '#f7f9f9', borderColor: '#eff3f4' }}>
+            <div className="font-mono text-[22px] text-[#1d9bf0] font-semibold mb-2.5">{item.name}</div>
+            <div className="text-[22px] text-[#536471] leading-relaxed">{item.desc}</div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ——— 主组件 ——— */
 
 export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   index,
@@ -37,129 +314,96 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   content,
   image,
   isCover = false,
+  layout = 'text',
+  listItems,
+  terminalLines,
+  gridItems,
   authorInfo = { name: 'Jinger', handle: '@Jinger_Vibe', avatarSeed: 'Jinger' },
   className
 }, ref) => {
+  const ctx: RenderCtx = { title, content, image, subtitle, listItems, terminalLines, gridItems };
+
+  // 生成时间戳（固定格式，匹配参考风格）
+  const dateStr = '9:05 AM · May 5, 2026 · 522.9K Views';
+
   return (
     <div
       ref={ref}
       className={cn(
-        "relative bg-white shadow-xl overflow-hidden flex flex-col",
-        "w-[1080px] h-[1440px] shrink-0",
+        "relative bg-white overflow-hidden flex flex-col",
+        "w-[1242px] h-[1660px] shrink-0",
         className
       )}
     >
-      {/* Dynamic Background Pattern for aesthetic */}
-      <div className="absolute inset-0 opacity-[0.03] pointer-events-none">
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-gray-900 to-transparent"></div>
-        <div className="absolute inset-y-0 left-0 w-px bg-gradient-to-b from-transparent via-gray-900 to-transparent"></div>
-      </div>
-
-      {/* Header (Authentic Twitter Style) */}
-      <div className="px-16 pt-20 flex items-start justify-between shrink-0">
-        <div className="flex gap-5">
-          {/* Avatar Area */}
-          <div className="w-20 h-20 rounded-full bg-red-500 flex-shrink-0 border-4 border-white shadow-lg overflow-hidden flex items-center justify-center text-white font-black text-4xl italic">
-             <img 
-              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${authorInfo.avatarSeed}`}
-              alt="Avatar"
-              className="w-full h-full object-cover"
-             />
-          </div>
-          <div className="flex flex-col mt-1">
-            <div className="flex items-center gap-2">
-              <span className="font-black text-[36px] tracking-tight text-gray-900">{authorInfo.name}</span>
-              <svg viewBox="0 0 24 24" className="w-8 h-8 text-[#1D9BF0] fill-current">
-                <path d="M22.5 12.5c0-1.58-.8-2.47-1.24-3.19-.36-.58-.44-1.1-.25-1.74.21-.69.67-1.44 1.1-2.02.38-.52.7-1.07.7-1.8 0-1.27-.99-2.25-2.25-2.25-.72 0-1.27.31-1.8.69-.58.42-1.33.89-2.02 1.1-.64.19-1.16.11-1.74-.25-.72-.44-1.61-1.24-3.19-1.24s-2.47.8-3.19 1.24c-.58.36-1.1.44-1.74.25-.69-.21-1.44-.67-2.02-1.1-.52-.38-1.07-.69-1.8-.69-1.27 0-2.25.99-2.25 2.25 0 .72.31 1.27.69 1.8.42.58.89 1.33 1.1 2.02.19.64.11 1.16-.25 1.74-.44.72-1.24 1.61-1.24 3.19s.8 2.47 1.24 3.19c.36.58.44 1.1.25 1.74-.21.69-.67 1.44-1.1 2.02-.38.52-.69 1.07-.69 1.8 0 1.27.99 2.25 2.25 2.25.72 0 1.27-.31 1.8-.69.58-.42 1.33-.89 2.02-1.1.64-.19 1.16-.11 1.74.25.72.44 1.61 1.24 3.19 1.24s 2.47-.8 3.19-1.24c.58-.36 1.1-.44 1.74-.25.69.21 1.44.67 2.02 1.1.52.38 1.07.69 1.8.69 1.27 0 2.25-.99 2.25-2.25 0-.73-.31-1.28-.69-1.8-.42-.58-.89-1.33-1.1-2.02-.19-.64-.11-1.16.25-1.74.44-.72 1.24-1.61 1.24-3.19zM10 17l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-              </svg>
-            </div>
-            <span className="text-gray-500 text-2xl font-medium tracking-tight">{authorInfo.handle}</span>
-          </div>
+      {/* ——— 头部 ——— */}
+      <div className="flex items-start px-20 pt-16 gap-4 shrink-0">
+        <div className="w-20 h-20 rounded-full overflow-hidden bg-red-50 flex-shrink-0">
+          <img
+            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${authorInfo.avatarSeed}`}
+            alt="Avatar"
+            className="w-full h-full object-cover"
+          />
         </div>
-        <MoreHorizontal className="text-gray-400 w-10 h-10" />
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-[28px] font-bold text-[#0f1419] leading-tight">{authorInfo.name}</span>
+            {/* Verified 徽章 */}
+            <svg viewBox="0 0 22 22" className="w-7 h-7 shrink-0">
+              <path d="M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.855-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.69-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.636.433 1.221.878 1.69.47.446 1.055.752 1.69.883.635.13 1.294.083 1.902-.143.271.586.702 1.084 1.24 1.438.54.354 1.167.551 1.813.569.646-.018 1.273-.215 1.813-.569.54-.354.97-.853 1.24-1.438.608.226 1.267.276 1.902.143.635-.131 1.22-.437 1.69-.883.445-.469.749-1.054.878-1.69.131-.633.08-1.29-.14-1.896.587-.273 1.084-.705 1.438-1.245.355-.54.553-1.17.57-1.817z" fill="#1d9bf0"/>
+              <path d="M9.585 14.929l-3.28-3.28 1.168-1.168 2.112 2.112 5.06-5.06 1.168 1.168-6.228 6.228z" fill="#fff"/>
+            </svg>
+          </div>
+          <span className="text-[24px] text-[#536471]">{authorInfo.handle}</span>
+        </div>
+        <MoreHorizontal className="w-10 h-10 text-[#536471] ml-auto mt-1 shrink-0" />
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 px-16 mt-14 flex flex-col min-h-0">
-        {isCover ? (
-          <div className="flex flex-col h-full">
-            <div className="mb-14 z-10">
-              <div className="inline-block px-5 py-2 bg-red-50 text-red-500 rounded-2xl text-xl font-black tracking-widest uppercase mb-8 shadow-sm">
-                NEW VIBE UNLOCKED ⚡️
-              </div>
-              <h1 className="text-[110px] font-black leading-[0.95] tracking-tighter text-gray-900 drop-shadow-sm">
-                {title.split('：')[0] || title}
-              </h1>
-              {title.includes('：') && (
-                <div className="mt-4 text-[76px] font-black text-red-500 tracking-tighter">
-                  {title.split('：')[1]}
-                </div>
-              )}
-              {subtitle && (
-                <p className="mt-10 text-[42px] font-bold text-gray-400 max-w-[850px] leading-tight">
-                  {subtitle}
-                </p>
-              )}
-            </div>
-            
-            <div className="relative flex-1 bg-gray-50 rounded-[60px] border border-gray-100 overflow-hidden shadow-inner mb-8 group/cover">
-                <div className="absolute inset-0 p-16 flex items-center justify-center">
-                  <div className="w-full h-full bg-white rounded-[40px] shadow-2xl overflow-hidden border border-gray-100 flex flex-col transform transition-transform group-hover/cover:scale-[1.02] duration-700">
-                    <div className="h-6 bg-gray-50 border-b border-gray-100 flex gap-2 px-4 items-center">
-                      <div className="w-2.5 h-2.5 rounded-full bg-red-400"></div>
-                      <div className="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
-                      <div className="w-2.5 h-2.5 rounded-full bg-green-400"></div>
-                    </div>
-                    {image ? (
-                      <img src={image} className="flex-1 object-cover" />
-                    ) : (
-                      <div className="flex-1 bg-gradient-to-br from-red-500/10 to-orange-500/10 flex items-center justify-center">
-                        <Sparkles className="w-32 h-32 text-red-500/20" />
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="absolute -bottom-6 -right-6 px-12 py-5 bg-black text-white shadow-2xl rounded-[30px] font-black text-4xl rotate-[-2deg] tracking-tighter">
-                   #{total} CARDS PACK
-                </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col h-full min-h-0">
-            <h2 className="text-[64px] font-black leading-tight mb-12 text-gray-900 tracking-tighter shrink-0">
-              {title}
-            </h2>
-            <div className="text-[44px] leading-[1.5] text-gray-700 whitespace-pre-wrap flex-1 min-h-0 overflow-hidden font-bold tracking-tight bg-gray-50/30 p-10 rounded-[40px] border border-dashed border-gray-200">
-              {content}
-            </div>
-            
-            {image && (
-              <div className="mt-12 mb-8 rounded-[50px] border-8 border-white overflow-hidden bg-white shadow-2xl max-h-[650px] relative group/img">
-                  <img src={image} className="w-full h-full object-cover rounded-[42px]" />
-                  <div className="absolute inset-0 ring-1 ring-inset ring-black/10 rounded-[42px]"></div>
-              </div>
-            )}
-          </div>
+      {/* ——— 内容区域 ——— */}
+      <div className="flex-1 px-20 pt-8 flex flex-col overflow-hidden">
+        {isCover ? renderCover(ctx) : (
+          layout === 'list' ? renderList(ctx) :
+          layout === 'terminal' ? renderTerminal(ctx) :
+          layout === 'grid' ? renderGrid(ctx) :
+          renderText(ctx)
         )}
       </div>
 
-      {/* Twitter Actions Footer */}
-      <div className="px-16 py-12 flex items-center justify-between border-t border-gray-50 shrink-0">
-        <div className="flex gap-16 text-gray-400 font-black text-3xl italic tracking-tighter">
-            <span className="flex items-center gap-3">
-              <MessageCircle className="w-8 h-8" /> {128 + index * 12}
-            </span>
-            <span className="flex items-center gap-3 text-red-500">
-              <Heart className="w-8 h-8 fill-current" /> {1024 + index * 99}
-            </span>
-            <span className="flex items-center gap-3">
-              <BarChart3 className="w-8 h-8" /> {Math.floor(index * 2.4)}k
-            </span>
+      {/* ——— 底部 ——— */}
+      <div className="px-20 pb-7 flex flex-col gap-5 shrink-0 mt-auto">
+        <div className="text-[22px] text-[#536471] pt-4">{dateStr}</div>
+        <div className="h-px w-full" style={{ background: '#eff3f4' }} />
+        <div className="flex justify-between items-center py-2">
+          <div className="flex items-center gap-2.5 text-[22px]" style={{ color: '#536471' }}>
+            <IconReply /> <span>83</span>
+          </div>
+          <div className="flex items-center gap-2.5 text-[22px]" style={{ color: '#536471' }}>
+            <IconRetweet /> <span>1K</span>
+          </div>
+          <div className="flex items-center gap-2.5 text-[22px]" style={{ color: '#536471' }}>
+            <IconHeart /> <span>5.8K</span>
+          </div>
+          <div className="flex items-center gap-2.5 text-[22px]" style={{ color: '#536471' }}>
+            <IconBookmark /> <span>198</span>
+          </div>
+          <div className="flex items-center gap-2.5" style={{ color: '#536471' }}>
+            <IconShare />
+          </div>
         </div>
-        <div className="px-8 py-3 bg-gray-100 text-gray-400 text-3xl font-black font-mono rounded-2xl tracking-tighter">
-          {index.toString().padStart(2, '0')} / {total.toString().padStart(2, '0')}
-        </div>
+      </div>
+
+      {/* ——— 页码 ——— */}
+      <div
+        className="absolute text-[24px] font-semibold"
+        style={{
+          color: '#536471',
+          background: '#f7f9f9',
+          padding: '8px 20px',
+          borderRadius: '20px',
+          bottom: '56px',
+          right: '80px'
+        }}
+      >
+        {index}/{total}
       </div>
     </div>
   );

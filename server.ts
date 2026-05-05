@@ -76,6 +76,18 @@ async function startServer() {
   });
 
   app.post("/api/generate", async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const keepAlive = setInterval(() => res.write(': ping\n\n'), 5000);
+
+    const sendResult = (data: any) => {
+      clearInterval(keepAlive);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      res.end();
+    };
+
     try {
       const { prompt: userPrompt, images, links, config } = req.body;
 
@@ -181,19 +193,16 @@ async function startServer() {
           contents
         });
 
-        text = result.response.text() || "";
+        text = result.text || "";
       }
 
-      // Clean markdown and extra whitespace from ANY AI provider
       text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
-      // Final response
       try {
-        res.json(JSON.parse(text));
+        sendResult(JSON.parse(text));
       } catch (parseError) {
         console.error("JSON Parse Error:", text);
-        // Fallback if AI didn't return valid JSON
-        res.json({
+        sendResult({
           caption: "生成成功（非标准格式）",
           cards: [{ title: "笔记内容", content: text }],
           tags: []
@@ -201,11 +210,10 @@ async function startServer() {
       }
     } catch (error: any) {
       console.error("API Error:", error);
-      
+
       let errorMessage = "生成失败";
       let details = error.message;
 
-      // Handle Gemini Quota Exceeded specifically
       if (error.message?.includes("RESOURCE_EXHAUSTED") || error.status === 429) {
         errorMessage = "API 额度已耗尽";
         details = "Gemini 免费额度已用完，请稍后再试，或者在设置中填入你自己的 API Key 以获得独立配额。";
@@ -215,14 +223,11 @@ async function startServer() {
       } else if (error.message?.includes("image_url") || error.status === 400) {
         if (error.message?.includes("expected text")) {
           errorMessage = "模型不支持图片";
-          details = "当前选择的模型（例如某些版本的 O1 或 DeepSeek）不支持图片输入，请尝试移除图片或更换为 vision 系列模型。";
+          details = "当前选择的模型不支持图片输入，请尝试移除图片或更换为 vision 系列模型。";
         }
       }
 
-      res.status(500).json({ 
-        error: errorMessage, 
-        details: details 
-      });
+      sendResult({ error: errorMessage, details });
     }
   });
 
@@ -240,7 +245,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
