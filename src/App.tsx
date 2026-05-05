@@ -21,12 +21,59 @@ export default function App() {
   const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [errorMsg, setErrorMsg] = useState<{ title: string; detail: string } | null>(null);
   const [apiConfig, setApiConfig] = useState({
     provider: 'gemini', // 'gemini' or 'openai'
     apiKey: '',
     baseUrl: '',
-    model: ''
+    model: '',
+    style: 'twitter' // 'twitter', 'xhs', 'tutorial'
   });
+
+  // Auto-fetch models when config changes (OpenAI only)
+  React.useEffect(() => {
+    if (apiConfig.provider === 'openai' && apiConfig.apiKey) {
+      const timer = setTimeout(() => {
+        fetchModels();
+      }, 1000); // Debounce
+      return () => clearTimeout(timer);
+    }
+  }, [apiConfig.apiKey, apiConfig.baseUrl]);
+
+  const fetchModels = async () => {
+    if (!apiConfig.apiKey || apiConfig.provider !== 'openai') return;
+    setFetchingModels(true);
+    try {
+      const response = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          apiKey: apiConfig.apiKey, 
+          baseUrl: apiConfig.baseUrl 
+        })
+      });
+      const data = await response.json();
+      if (data.models) {
+        setAvailableModels(data.models);
+        // Auto select a common model if currently empty
+        if (data.models.length > 0 && !apiConfig.model) {
+          const defaultModel = data.models.find((m: string) => m.toLowerCase().includes('gpt-4o') || m.toLowerCase().includes('chat')) || data.models[0];
+          setApiConfig(prev => ({...prev, model: defaultModel}));
+        }
+      } else {
+        setErrorMsg({ title: "模型获取失败", detail: data.error || "请检查 API Key 和 Base URL 是否正确" });
+        setTimeout(() => setErrorMsg(null), 5000);
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err);
+      setErrorMsg({ title: "网络错误", detail: "无法连接到服务器，请稍后再试" });
+      setTimeout(() => setErrorMsg(null), 3000);
+    } finally {
+      setFetchingModels(false);
+    }
+  };
   const [result, setResult] = useState<{
     caption: string;
     cards: { title: string; subtitle?: string; content: string; imageIndex?: number; isCover?: boolean }[];
@@ -59,29 +106,33 @@ export default function App() {
     if (!ideas) return;
     setLoading(true);
     try {
-      const promptText = `你是一个小红书爆款博主，擅长AI/Vibe Coding领域。
+      const stylePrompts = {
+        twitter: `风格：推特金句风格。要求用词犀利、幽默、网感极强，文字极其精炼，每张卡片不超过3句话，像推特/X上的热门帖子。多用金句，少用废话。`,
+        xhs: `风格：经典小红书风格。要求语气热情、亲切，多用富有感染力的形容词，适当加入表情包，文案稍微详细一点，照顾读者的情绪价值。`,
+        tutorial: `风格：干货教学风格。要求逻辑极其清晰，分步讲解（第一步、第二步...），强调实用性和操作性，每张卡片聚焦一个知识点。`
+      };
+
+      const promptText = `你是一个深耕AI/Vibe Coding领域的博主。
       请根据提供的信息生成一篇小红书笔记素材。
       
+      ${stylePrompts[apiConfig.style as keyof typeof stylePrompts]}
+      
       文案要求：
-      1. 开头2行钩子
-      2. 编号讲步骤
-      3. 有个人判断和边界
-      4. 说适合谁，不适合谁
-      5. 结尾给收藏理由
+      1. 开头2行钩子（要吸引人）
+      2. 结尾给收藏理由
       
       卡片要求：
       1. 第一张必为封面 (isCover: true)
-      2. 后续为内容页
-      3. 每张卡片内容精炼，不超过手机阅读负担
-      4. imageIndex 是输入图片数组的索引，如果没有合适图片可不填
+      2. 每张卡片内容精炼，像推特截图那样易于阅读
+      3. imageIndex 是输入图片数组的索引，如果没有合适图片可不填
       
       输出必须是JSON格式：
       {
-        "caption": "符合要求的文案正文",
+        "caption": "符合风格的文案正文",
         "tags": ["标签1", "标签2"],
         "cards": [
-          { "title": "封面大标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
-          { "title": "步骤1标题", "content": "步骤1详细描述", "imageIndex": 1 }
+          { "title": "封面标题", "subtitle": "封面副标题", "content": "", "imageIndex": 0, "isCover": true },
+          { "title": "卡片1标题", "content": "卡片1内容", "imageIndex": 1 }
         ]
       }
       `;
@@ -93,19 +144,18 @@ export default function App() {
           prompt: `核心想法: ${ideas}\n\n指令: ${promptText}`,
           images,
           links: links.filter(l => l.trim().startsWith('http')),
-          config: apiConfig.provider === 'openai' ? {
-            apiKey: apiConfig.apiKey,
-            baseUrl: apiConfig.baseUrl,
-            model: apiConfig.model
-          } : null
+          config: apiConfig
         })
       });
       const data = await response.json();
-      if (data.error) throw new Error(data.details || data.error);
+      if (data.error) {
+        setErrorMsg({ title: data.error, detail: data.details || "由于 API 限制，生成未能成功" });
+        return;
+      }
       setResult(data);
     } catch (error: any) {
       console.error(error);
-      alert('生成失败: ' + error.message);
+      setErrorMsg({ title: "生成失败", detail: error.message });
     } finally {
       setLoading(false);
     }
@@ -145,8 +195,20 @@ export default function App() {
       <nav className="h-14 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center text-white font-bold text-xl ring-2 ring-red-100">J</div>
-          <span className="font-bold tracking-tight text-lg">Jinger's Vibe Coding Editor <span className="text-xs font-normal text-gray-400 ml-1 italic font-mono">v1.0.4</span></span>
+          <span className="font-bold tracking-tight text-lg">Jinger's Vibe Coding Editor <span className="text-xs font-normal text-gray-400 ml-1 italic font-mono">v1.0.7</span></span>
         </div>
+        
+        {errorMsg && (
+          <div className="absolute left-1/2 -translate-x-1/2 top-4 bg-red-50 border border-red-200 px-4 py-2 rounded-lg shadow-xl flex items-center gap-3 z-[100] animate-bounce">
+            <div className="w-2 h-2 rounded-full bg-red-500"></div>
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold text-red-600 leading-none">{errorMsg.title}</span>
+              <span className="text-[10px] text-red-400 leading-tight mt-0.5">{errorMsg.detail}</span>
+            </div>
+            <button onClick={() => setErrorMsg(null)} className="ml-2 text-red-300 hover:text-red-500 text-xs">×</button>
+          </div>
+        )}
+
         <div className="flex items-center gap-4">
           <div className="flex -space-x-2">
             <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-100"></div>
@@ -190,15 +252,38 @@ export default function App() {
                    >Custom API</button>
                  </div>
                  
-                 {apiConfig.provider === 'openai' && (
+                 {apiConfig.provider === 'gemini' && (
                    <div className="space-y-2">
                      <input 
                        type="password" 
-                       placeholder="API Key" 
+                       placeholder="Gemini API Key (可选)" 
                        value={apiConfig.apiKey}
                        onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
                      />
+                     <p className="text-[9px] text-gray-400 font-medium">留空则默认使用 AI Studio 注入的 Key。</p>
+                   </div>
+                 )}
+
+                 {apiConfig.provider === 'openai' && (
+                   <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <input 
+                          type="password" 
+                          placeholder="API Key" 
+                          value={apiConfig.apiKey}
+                          onChange={e => setApiConfig({...apiConfig, apiKey: e.target.value})}
+                          className="flex-1 text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                        />
+                        <button 
+                         onClick={fetchModels}
+                         disabled={fetchingModels || !apiConfig.apiKey}
+                         title="刷新模型列表"
+                         className={`px-3 flex items-center justify-center bg-gray-100 hover:bg-black hover:text-white rounded-lg transition-all disabled:opacity-50 ${fetchingModels ? 'animate-pulse' : ''}`}
+                        >
+                          <Sparkles className={`w-3 h-3 ${fetchingModels ? 'animate-spin' : ''}`} />
+                        </button>
+                      </div>
                      <input 
                        type="text" 
                        placeholder="Base URL (e.g. https://api.deepseek.com/v1)" 
@@ -206,14 +291,25 @@ export default function App() {
                        onChange={e => setApiConfig({...apiConfig, baseUrl: e.target.value})}
                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
                      />
-                     <input 
-                       type="text" 
-                       placeholder="Model (e.g. deepseek-chat)" 
-                       value={apiConfig.model}
-                       onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
-                       className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
-                     />
-                     <p className="text-[9px] text-gray-400 font-medium">提示: 如果留空，将使用后端环境变量配置。</p>
+                     
+                     {availableModels.length > 0 ? (
+                       <select
+                        value={apiConfig.model}
+                        onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
+                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                       >
+                         {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                       </select>
+                     ) : (
+                       <input 
+                         type="text" 
+                         placeholder="Model (e.g. deepseek-chat)" 
+                         value={apiConfig.model}
+                         onChange={e => setApiConfig({...apiConfig, model: e.target.value})}
+                         className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                       />
+                     )}
+                     <p className="text-[9px] text-gray-400 font-medium">支持所有兼容 OpenAI 格式的模型（如 DeepSeek）。</p>
                    </div>
                  )}
               </div>
@@ -226,6 +322,25 @@ export default function App() {
               内容配置 / CONTENT
             </h3>
             <div className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-gray-500 ml-1 uppercase">创作风格</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'twitter', label: '推特金句', sub: '精炼/吐槽' },
+                    { id: 'xhs', label: '爆款氛围', sub: '亲切/感性' },
+                    { id: 'tutorial', label: '干货教程', sub: '逻辑/分层' }
+                  ].map(style => (
+                    <button
+                      key={style.id}
+                      onClick={() => setApiConfig({...apiConfig, style: style.id})}
+                      className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${apiConfig.style === style.id ? 'bg-black border-black text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400 hover:border-gray-300'}`}
+                    >
+                      <span className="text-[10px] font-bold">{style.label}</span>
+                      <span className="text-[8px] opacity-60 scale-90">{style.sub}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="space-y-1.5">
                 <label className="text-[11px] font-bold text-gray-500 ml-1 uppercase">灵感想法</label>
                 <textarea

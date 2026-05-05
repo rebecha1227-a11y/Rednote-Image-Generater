@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import axios from "axios";
 import * as cheerio from "cheerio";
@@ -36,6 +36,26 @@ async function startServer() {
 
   app.use(express.json({ limit: "25mb" }));
 
+  // API Route to fetch available models (OpenAI compatible)
+  app.post("/api/models", async (req, res) => {
+    try {
+      const { apiKey, baseUrl } = req.body;
+      if (!apiKey) return res.status(400).json({ error: "API Key is required" });
+
+      const openai = new OpenAI({
+        apiKey: apiKey,
+        baseURL: baseUrl || "https://api.openai.com/v1",
+      });
+
+      const list = await openai.models.list();
+      const models = list.data.map(m => m.id).sort();
+      res.json({ models });
+    } catch (error: any) {
+      console.error("Fetch Models Error:", error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/generate", async (req, res) => {
     try {
       const { prompt: userPrompt, images, links, config } = req.body;
@@ -60,65 +80,122 @@ async function startServer() {
       必须按要求输出指定的 JSON 格式。
       `;
 
-      const useExternal = config?.apiKey || process.env.OPENAI_API_KEY;
       let text = "";
 
-      if (useExternal) {
+      // Decision logic for AI provider
+      const isCustomOpenAI = config?.provider === "openai";
+      const isCustomGemini = config?.provider === "gemini" && config?.apiKey;
+      
+      if (isCustomOpenAI) {
         const openai = new OpenAI({
-          apiKey: config?.apiKey || process.env.OPENAI_API_KEY,
-          baseURL: config?.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+          apiKey: config.apiKey || process.env.OPENAI_API_KEY,
+          baseURL: config.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
         });
 
+        const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
+        const hasImages = images && Array.isArray(images) && images.length > 0;
+        
+        // Detect if the model likely supports vision
+        const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3');
+
+        // Fallback: If not a known vision model and images are present, we might want to warn
+        // but the most robust way is to follow the API's requirements.
+        // If "unknown variant image_url", we must only use text.
+        const content: any = (!hasImages || !isVisionModel) ? finalPrompt : [
+          { type: "text", text: finalPrompt },
+          ...images.map((img: string) => ({
+            type: "image_url",
+            image_url: { url: img },
+          })),
+        ];
+
         const response = await openai.chat.completions.create({
-          model: config?.model || process.env.OPENAI_MODEL_NAME || "gpt-4o",
+          model: modelName,
           messages: [
             {
               role: "user",
-              content: [
-                { type: "text", text: finalPrompt },
-                ...(images || []).map((img: string) => ({
-                  type: "image_url",
-                  image_url: { url: img },
-                })),
-              ],
+              content: content,
             },
           ],
-          response_format: { type: "json_object" },
+          // Only use json_object for supported models
+          response_format: (modelName.includes('gpt-4') || modelName.includes('o1') || modelName.includes('gpt-3.5')) 
+            ? { type: "json_object" } 
+            : undefined,
         });
         text = response.choices[0].message.content || "";
       } else {
-        const apiKey = process.env.GEMINI_API_KEY;
-        // Check if apiKey is valid (not a placeholder from .env.example)
-        if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.length < 10) {
-          throw new Error("Gemini API Key 未在环境变量中正确配置。请在 Secrets 面板设置。");
+        // Use Gemini (System or Custom)
+        const apiKey = isCustomGemini ? config.apiKey : process.env.GEMINI_API_KEY;
+        
+        if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+          throw new Error("Gemini API Key 未正确配置。如果你使用的是系统默认 Key，请确保已在 AI Studio Secrets 面板设置 GEMINI_API_KEY 且它是有效的 API Key。");
         }
 
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+        const ai = new GoogleGenAI({ apiKey });
+        const modelName = isCustomGemini ? (config.model || "gemini-2.0-flash") : "gemini-2.0-flash";
+        
+        const contents: any[] = [{
+          role: "user",
+          parts: [{ text: finalPrompt }]
+        }];
 
-        const parts: any[] = [{ text: finalPrompt }];
         if (images && Array.isArray(images)) {
           images.forEach((img) => {
-            parts.push({
+            const [mimePart, dataPart] = img.split(";base64,");
+            contents[0].parts.push({
               inlineData: {
-                data: img.split(",")[1],
-                mimeType: "image/png",
+                data: dataPart,
+                mimeType: mimePart.split(":")[1] || "image/png",
               },
             });
           });
         }
 
-        const result = await model.generateContent(parts);
-        const gResponse = await result.response;
-        text = gResponse.text().replace(/```json/g, "").replace(/```/g, "").trim();
+        const result = await ai.models.generateContent({
+          model: modelName,
+          contents
+        });
+
+        text = result.response.text() || "";
+        // Clean markdown
+        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
       }
 
-      res.json(JSON.parse(text));
+      // Final response
+      try {
+        res.json(JSON.parse(text));
+      } catch (parseError) {
+        console.error("JSON Parse Error:", text);
+        // Fallback if AI didn't return valid JSON
+        res.json({
+          caption: "生成成功（非标准格式）",
+          cards: [{ title: "笔记内容", content: text }],
+          tags: []
+        });
+      }
     } catch (error: any) {
       console.error("API Error:", error);
+      
+      let errorMessage = "生成失败";
+      let details = error.message;
+
+      // Handle Gemini Quota Exceeded specifically
+      if (error.message?.includes("RESOURCE_EXHAUSTED") || error.status === 429) {
+        errorMessage = "API 额度已耗尽";
+        details = "Gemini 免费额度已用完，请稍后再试，或者在设置中填入你自己的 API Key 以获得独立配额。";
+      } else if (error.status === 401) {
+        errorMessage = "API Key 错误";
+        details = "提供的 API Key 无效或已过期，请检查设置。";
+      } else if (error.message?.includes("image_url") || error.status === 400) {
+        if (error.message?.includes("expected text")) {
+          errorMessage = "模型不支持图片";
+          details = "当前选择的模型（例如某些版本的 O1 或 DeepSeek）不支持图片输入，请尝试移除图片或更换为 vision 系列模型。";
+        }
+      }
+
       res.status(500).json({ 
-        error: "生成失败", 
-        details: error.message 
+        error: errorMessage, 
+        details: details 
       });
     }
   });
