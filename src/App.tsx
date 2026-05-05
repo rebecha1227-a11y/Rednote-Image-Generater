@@ -517,7 +517,7 @@ export default function App() {
               <p className="font-black text-xs uppercase tracking-[0.2em] italic">Waiting for Magic...</p>
             </div>
           ) : (
-            <div className="w-full max-w-5xl mt-12 grid grid-cols-2 gap-12 items-start pb-24">
+            <div className="w-full max-w-lg mt-12 flex flex-col gap-12 items-center pb-24">
               {result.cards.map((card, i) => (
                 <div key={i} className="flex flex-col items-center gap-6 group">
                    <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{width: '378px', height: '504px'}}>
