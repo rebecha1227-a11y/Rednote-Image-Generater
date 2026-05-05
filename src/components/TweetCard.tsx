@@ -1,7 +1,13 @@
 import { forwardRef } from 'react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { MoreHorizontal, ArrowRight, Check } from 'lucide-react';
+import { 
+  MoreHorizontal, 
+  MessageCircle, 
+  Heart, 
+  BarChart3, 
+  Sparkles 
+} from 'lucide-react';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -15,6 +21,11 @@ interface CardProps {
   content: string;
   image?: string;
   isCover?: boolean;
+  authorInfo?: {
+    name: string;
+    handle: string;
+    avatarSeed: string;
+  };
   className?: string;
 }
 
@@ -26,6 +37,7 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   content,
   image,
   isCover = false,
+  authorInfo = { name: 'Jinger', handle: '@Jinger_Vibe', avatarSeed: 'Jinger' },
   className
 }, ref) => {
   return (
@@ -48,16 +60,20 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
         <div className="flex gap-5">
           {/* Avatar Area */}
           <div className="w-20 h-20 rounded-full bg-red-500 flex-shrink-0 border-4 border-white shadow-lg overflow-hidden flex items-center justify-center text-white font-black text-4xl italic">
-            J
+             <img 
+              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${authorInfo.avatarSeed}`}
+              alt="Avatar"
+              className="w-full h-full object-cover"
+             />
           </div>
           <div className="flex flex-col mt-1">
             <div className="flex items-center gap-2">
-              <span className="font-black text-[36px] tracking-tight text-gray-900">Jinger</span>
+              <span className="font-black text-[36px] tracking-tight text-gray-900">{authorInfo.name}</span>
               <svg viewBox="0 0 24 24" className="w-8 h-8 text-[#1D9BF0] fill-current">
                 <path d="M22.5 12.5c0-1.58-.8-2.47-1.24-3.19-.36-.58-.44-1.1-.25-1.74.21-.69.67-1.44 1.1-2.02.38-.52.7-1.07.7-1.8 0-1.27-.99-2.25-2.25-2.25-.72 0-1.27.31-1.8.69-.58.42-1.33.89-2.02 1.1-.64.19-1.16.11-1.74-.25-.72-.44-1.61-1.24-3.19-1.24s-2.47.8-3.19 1.24c-.58.36-1.1.44-1.74.25-.69-.21-1.44-.67-2.02-1.1-.52-.38-1.07-.69-1.8-.69-1.27 0-2.25.99-2.25 2.25 0 .72.31 1.27.69 1.8.42.58.89 1.33 1.1 2.02.19.64.11 1.16-.25 1.74-.44.72-1.24 1.61-1.24 3.19s.8 2.47 1.24 3.19c.36.58.44 1.1.25 1.74-.21.69-.67 1.44-1.1 2.02-.38.52-.69 1.07-.69 1.8 0 1.27.99 2.25 2.25 2.25.72 0 1.27-.31 1.8-.69.58-.42 1.33-.89 2.02-1.1.64-.19 1.16-.11 1.74.25.72.44 1.61 1.24 3.19 1.24s 2.47-.8 3.19-1.24c.58-.36 1.1-.44 1.74-.25.69.21 1.44.67 2.02 1.1.52.38 1.07.69 1.8.69 1.27 0 2.25-.99 2.25-2.25 0-.73-.31-1.28-.69-1.8-.42-.58-.89-1.33-1.1-2.02-.19-.64-.11-1.16.25-1.74.44-.72 1.24-1.61 1.24-3.19zM10 17l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
               </svg>
             </div>
-            <span className="text-gray-500 text-2xl font-medium tracking-tight">@Jinger_Vibe</span>
+            <span className="text-gray-500 text-2xl font-medium tracking-tight">{authorInfo.handle}</span>
           </div>
         </div>
         <MoreHorizontal className="text-gray-400 w-10 h-10" />

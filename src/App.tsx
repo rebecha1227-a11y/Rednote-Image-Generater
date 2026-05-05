@@ -24,6 +24,11 @@ export default function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<{ title: string; detail: string } | null>(null);
+  const [authorInfo, setAuthorInfo] = useState({
+    name: 'Jinger',
+    handle: '@Jinger_Vibe',
+    avatarSeed: 'Jinger'
+  });
   const [apiConfig, setApiConfig] = useState({
     provider: 'gemini', // 'gemini' or 'openai'
     apiKey: '',
@@ -192,10 +197,10 @@ export default function App() {
   return (
     <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden select-none">
       {/* Top Navigation Tool Bar */}
-      <nav className="h-14 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center text-white font-bold text-xl ring-2 ring-red-100">J</div>
-          <span className="font-bold tracking-tight text-lg">Jinger's Vibe Coding Editor <span className="text-xs font-normal text-gray-400 ml-1 italic font-mono">v1.0.7</span></span>
+      <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
+        <div className="flex flex-col">
+          <span className="font-script text-3xl tracking-tight drop-shadow-sm leading-none" style={{ color: '#9c5d21' }}>LittleRedNote Image Generator</span>
+          <span className="font-script text-sm tracking-widest mt-0.5 opacity-60 ml-1" style={{ color: '#9c5d21' }}>@Jinger</span>
         </div>
         
         {errorMsg && (
@@ -211,9 +216,9 @@ export default function App() {
 
         <div className="flex items-center gap-4">
           <div className="flex -space-x-2">
-            <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-100"></div>
-            <div className="w-8 h-8 rounded-full border-2 border-white bg-green-100"></div>
-            <div className="w-8 h-8 rounded-full border-2 border-white bg-purple-100 shadow-sm"></div>
+            <div className="w-8 h-8 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: '#feebdb' }}></div>
+            <div className="w-8 h-8 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: '#e3c69a' }}></div>
+            <div className="w-8 h-8 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: '#a37c40' }}></div>
           </div>
           {result && (
             <button 
@@ -234,9 +239,10 @@ export default function App() {
           <section className="bg-gray-50 -mx-6 -mt-6 p-6 border-b border-gray-200">
             <button 
               onClick={() => setShowSettings(!showSettings)}
-              className="flex items-center justify-between w-full text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 hover:text-black transition-colors"
+              className="flex items-center justify-between w-full text-[10px] font-black uppercase tracking-widest mb-2 hover:opacity-80 transition-colors border-b pb-1"
+              style={{ color: '#836638', borderColor: '#e0b01a' }}
             >
-              <span>API 设置 / SETTINGS</span>
+              <span>个人设置 / PREFERENCES</span>
               <Plus className={`w-3 h-3 transition-transform ${showSettings ? 'rotate-45' : ''}`} />
             </button>
             {showSettings && (
@@ -309,9 +315,39 @@ export default function App() {
                          className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
                        />
                      )}
-                     <p className="text-[9px] text-gray-400 font-medium">支持所有兼容 OpenAI 格式的模型（如 DeepSeek）。</p>
                    </div>
                  )}
+
+                 <div className="h-px bg-gray-200 my-4" />
+                 <div className="space-y-4">
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">个人品牌 / BRANDING</p>
+                    <div className="grid grid-cols-2 gap-2">
+                       <input 
+                         type="text" 
+                         placeholder="昵称" 
+                         value={authorInfo.name}
+                         onChange={e => setAuthorInfo({...authorInfo, name: e.target.value})}
+                         className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                       />
+                       <input 
+                         type="text" 
+                         placeholder="@ID" 
+                         value={authorInfo.handle}
+                         onChange={e => setAuthorInfo({...authorInfo, handle: e.target.value})}
+                         className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                       />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-gray-400 font-bold ml-1">头像种子 (DiceBear Seed)</label>
+                      <input 
+                        type="text" 
+                        placeholder="输入文字改变头像..." 
+                        value={authorInfo.avatarSeed}
+                        onChange={e => setAuthorInfo({...authorInfo, avatarSeed: e.target.value})}
+                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                      />
+                    </div>
+                 </div>
               </div>
             )}
           </section>
@@ -426,14 +462,21 @@ export default function App() {
           <button
             onClick={handleGenerate}
             disabled={loading || !ideas}
-            className="w-full bg-red-500 text-white py-4 rounded-full font-bold flex items-center justify-center gap-2 hover:bg-red-600 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed transition-all shadow-lg shadow-red-100 active:scale-95"
+            className="w-full py-4 rounded-full font-bold flex items-center justify-center gap-2 border-2 transition-all shadow-lg active:scale-95 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-transparent"
+            style={{ 
+              backgroundColor: loading || !ideas ? undefined : '#e9d9c3', 
+              borderColor: loading || !ideas ? undefined : '#6f4a0a' 
+            }}
           >
             {loading ? (
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             ) : (
               <>
-                <Sparkles className="w-4 h-4" />
-                <span>生成全套素材 / GENERATE</span>
+                <Sparkles className="w-4 h-4" style={{ color: '#7f643e' }} />
+                <div className="flex gap-1">
+                  <span style={{ color: '#7f643e' }}>生成全套素材</span>
+                  <span style={{ color: '#845a2e' }}>/ GENERATE</span>
+                </div>
               </>
             )}
           </button>
@@ -461,9 +504,9 @@ export default function App() {
 
         {/* Main Workspace: Card Previews */}
         <section className="flex-1 p-8 overflow-y-auto relative flex flex-col items-center bg-[#f3f4f6]">
-          <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black text-gray-400 uppercase tracking-widest">
-            <span className="text-red-500 border-b-2 border-red-500 pb-1 cursor-default">预览模式 / PREVIEW</span>
-            <span className="hover:text-gray-800 cursor-pointer transition-colors">导出历史 / HISTORY</span>
+          <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black uppercase tracking-widest">
+            <span className="pb-1 cursor-default border-b-2" style={{ color: '#836638', borderColor: '#e0b01a' }}>预览模式 / PREVIEW</span>
+            <span className="text-gray-400 hover:text-gray-800 cursor-pointer transition-colors">导出历史 / HISTORY</span>
           </div>
 
           {!result ? (
@@ -488,6 +531,7 @@ export default function App() {
                           content={card.content}
                           isCover={card.isCover}
                           image={card.imageIndex !== undefined ? images[card.imageIndex] : undefined}
+                          authorInfo={authorInfo}
                           className="scale-100"
                         />
                       </div>
@@ -507,7 +551,7 @@ export default function App() {
 
           {/* Overlay Hint */}
           <div className="fixed bottom-12 left-1/2 -translate-x-[calc(50%-180px)] xl:-translate-x-[calc(50%-192px)] flex items-center gap-3 px-5 py-2.5 bg-white/90 backdrop-blur-md rounded-full shadow-2xl border border-white/50 z-20 transition-all hover:scale-105">
-            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+            <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: '#876125' }}></div>
             <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">
               Live Rendering: 1080 × 1440 HD Output
             </span>
@@ -519,7 +563,7 @@ export default function App() {
       <footer className="h-8 bg-white border-t border-gray-200 px-6 flex items-center justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest shrink-0">
         <div className="flex gap-6">
           <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#f4bf0b' }}></span>
             <span>SYSTEM: SYNCING CONTENT</span>
           </div>
           <span>FORMAT: 3:4 VERTICAL HD</span>
@@ -527,7 +571,7 @@ export default function App() {
         <div className="flex gap-6 items-center">
           <span>VIBE CODING ENGINE ACTIVE</span>
           <div className="flex items-center gap-1.5">
-            <span className="text-red-500 animate-pulse text-lg">●</span>
+            <span style={{ borderColor: '#99c88c', color: '#628d60' }} className="text-red-500 animate-pulse text-lg">●</span>
             <span className="mt-0.5">RECORDING UI CHANGES</span>
           </div>
         </div>

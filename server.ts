@@ -30,6 +30,17 @@ async function fetchUrlContent(url: string): Promise<string> {
   }
 }
 
+// Helper to ensure URL has protocol
+function sanitizeBaseUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  let sanitized = url.trim();
+  if (!sanitized.startsWith('http://') && !sanitized.startsWith('https://')) {
+    sanitized = 'https://' + sanitized;
+  }
+  // Ensure we don't have trailing slash for some libraries that add it automatically
+  return sanitized.replace(/\/$/, "");
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -42,9 +53,17 @@ async function startServer() {
       const { apiKey, baseUrl } = req.body;
       if (!apiKey) return res.status(400).json({ error: "API Key is required" });
 
+      const sanitizedUrl = sanitizeBaseUrl(baseUrl);
+      // Log for debugging (internal console)
+      console.log(`Fetching models from: ${sanitizedUrl || 'OpenAI Default'}`);
+      
       const openai = new OpenAI({
         apiKey: apiKey,
-        baseURL: baseUrl || "https://api.openai.com/v1",
+        baseURL: sanitizedUrl || "https://api.openai.com/v1",
+        // Some proxies need direct auth headers
+        defaultHeaders: {
+          'Authorization': `Bearer ${apiKey}`
+        }
       });
 
       const list = await openai.models.list();
@@ -87,9 +106,13 @@ async function startServer() {
       const isCustomGemini = config?.provider === "gemini" && config?.apiKey;
       
       if (isCustomOpenAI) {
+        const sanitizedUrl = sanitizeBaseUrl(config.baseUrl);
         const openai = new OpenAI({
           apiKey: config.apiKey || process.env.OPENAI_API_KEY,
-          baseURL: config.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+          baseURL: sanitizedUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+          defaultHeaders: {
+            'Authorization': `Bearer ${config.apiKey || process.env.OPENAI_API_KEY}`
+          }
         });
 
         const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
@@ -157,9 +180,10 @@ async function startServer() {
         });
 
         text = result.response.text() || "";
-        // Clean markdown
-        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
       }
+
+      // Clean markdown and extra whitespace from ANY AI provider
+      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
       // Final response
       try {
