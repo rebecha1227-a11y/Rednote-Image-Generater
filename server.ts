@@ -118,8 +118,8 @@ async function startServer() {
         const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
         const hasImages = images && Array.isArray(images) && images.length > 0;
         
-        // Detect if the model likely supports vision
-        const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3');
+        // Detect if the model likely supports vision (be permissive for third-party proxies)
+        const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3') || modelName.includes('vl') || modelName.includes('visual') || modelName.includes('gemini') || modelName.includes('llava');
 
         // Fallback: If not a known vision model and images are present, we might want to warn
         // but the most robust way is to follow the API's requirements.
@@ -140,10 +140,7 @@ async function startServer() {
               content: content,
             },
           ],
-          // Only use json_object for supported models
-          response_format: (modelName.includes('gpt-4') || modelName.includes('o1') || modelName.includes('gpt-3.5')) 
-            ? { type: "json_object" } 
-            : undefined,
+          response_format: undefined,
         });
         text = response.choices[0].message.content || "";
       } else {
