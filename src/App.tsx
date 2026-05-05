@@ -24,18 +24,29 @@ export default function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<{ title: string; detail: string } | null>(null);
-  const [authorInfo, setAuthorInfo] = useState({
+  const savedAuthor = JSON.parse(localStorage.getItem('authorInfo') || 'null');
+  const savedConfig = JSON.parse(localStorage.getItem('apiConfig') || 'null');
+
+  const [authorInfo, setAuthorInfo] = useState(savedAuthor || {
     name: 'Jinger',
     handle: '@Jinger_Vibe',
     avatarSeed: 'Jinger'
   });
-  const [apiConfig, setApiConfig] = useState({
-    provider: 'gemini', // 'gemini' or 'openai'
+  const [apiConfig, setApiConfig] = useState(savedConfig || {
+    provider: 'gemini',
     apiKey: '',
     baseUrl: '',
     model: '',
-    style: 'twitter' // 'twitter', 'xhs', 'tutorial'
+    style: 'twitter'
   });
+
+  React.useEffect(() => {
+    localStorage.setItem('authorInfo', JSON.stringify(authorInfo));
+  }, [authorInfo]);
+
+  React.useEffect(() => {
+    localStorage.setItem('apiConfig', JSON.stringify(apiConfig));
+  }, [apiConfig]);
 
   // Auto-fetch models when config changes (OpenAI only)
   React.useEffect(() => {
