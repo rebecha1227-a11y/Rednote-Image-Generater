@@ -142,7 +142,12 @@ async function startServer() {
           ],
           response_format: undefined,
         });
-        text = response.choices[0].message.content || "";
+        const choice = response?.choices?.[0];
+        if (!choice) {
+          console.error("Unexpected API response:", JSON.stringify(response));
+          throw new Error("API 返回格式异常，没有 choices 字段。请确认该接口兼容 OpenAI 格式，或检查模型名称是否填写正确。");
+        }
+        text = choice.message?.content || "";
       } else {
         // Use Gemini (System or Custom)
         const apiKey = isCustomGemini ? config.apiKey : process.env.GEMINI_API_KEY;
