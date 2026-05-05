@@ -62,9 +62,9 @@ export default function App() {
       const data = await response.json();
       if (data.models) {
         setAvailableModels(data.models);
-        // Auto select a common model if currently empty
-        if (data.models.length > 0 && !apiConfig.model) {
-          const defaultModel = data.models.find((m: string) => m.toLowerCase().includes('gpt-4o') || m.toLowerCase().includes('chat')) || data.models[0];
+        // 如果当前模型不在新列表里，自动切换到第一个可用的
+        if (data.models.length > 0 && !data.models.includes(apiConfig.model)) {
+          const defaultModel = data.models.find((m: string) => m.toLowerCase().includes('chat')) || data.models[0];
           setApiConfig(prev => ({...prev, model: defaultModel}));
         }
       } else {
