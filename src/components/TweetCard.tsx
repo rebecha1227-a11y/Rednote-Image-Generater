@@ -1,5 +1,5 @@
-import { forwardRef } from 'react';
-import { MoreHorizontal, Sparkles } from 'lucide-react';
+import React, { forwardRef } from 'react';
+import { MoreHorizontal, Sparkles, ImagePlus, UserRound } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -7,7 +7,10 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-interface CardProps {
+export type CardEditorField = 'title' | 'subtitle' | 'content' | 'listItem' | 'terminalLine' | 'gridName' | 'gridDesc';
+
+type CardProps = {
+  cardIndex?: number;
   index: number;
   total: number;
   title: string;
@@ -15,19 +18,52 @@ interface CardProps {
   content: string;
   image?: string;
   isCover?: boolean;
-  layout?: 'text' | 'list' | 'terminal' | 'grid';
+  layout?: 'cover' | 'text' | 'list' | 'terminal' | 'grid';
   listItems?: string[];
   terminalLines?: { type: string; text: string }[];
   gridItems?: { name: string; desc: string }[];
   authorInfo?: {
     name: string;
     handle: string;
-    avatarSeed: string;
+    avatarImage: string;
   };
   className?: string;
-}
+  editable?: boolean;
+  activeEditor?: {
+    cardIndex: number;
+    field: CardEditorField;
+    itemIndex?: number;
+  } | null;
+  editingValue?: string;
+  onEditingValueChange?: (value: string) => void;
+  onStartEdit?: (field: CardEditorField, itemIndex?: number) => void;
+  onCommitEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
+  onPickImage?: () => void;
+};
 
-/* ——— Twitter/X 风格 SVG 图标 ——— */
+type RenderCtx = {
+  title: string;
+  content: string;
+  image?: string;
+  subtitle?: string;
+  listItems?: string[];
+  terminalLines?: { type: string; text: string }[];
+  gridItems?: { name: string; desc: string }[];
+};
+
+type EditHelpers = {
+  editable?: boolean;
+  activeEditor?: CardProps['activeEditor'];
+  editingValue?: string;
+  onEditingValueChange?: (value: string) => void;
+  onStartEdit?: (field: CardEditorField, itemIndex?: number) => void;
+  onCommitEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
+  onPickImage?: () => void;
+};
 
 function IconReply() {
   return (
@@ -69,99 +105,105 @@ function IconShare() {
   );
 }
 
-/* ——— 布局渲染函数 ——— */
-
-interface RenderCtx {
-  title: string;
-  content: string;
-  image?: string;
-  subtitle?: string;
-  listItems?: string[];
-  terminalLines?: { type: string; text: string }[];
-  gridItems?: { name: string; desc: string }[];
+function renderRichText(text: string) {
+  const parts = text.split(/(<highlight>.*?<\/highlight>|<tag>.*?<\/tag>)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    const highlightMatch = part.match(/^<highlight>(.*?)<\/highlight>$/);
+    if (highlightMatch) {
+      return <span key={index} className="bg-[linear-gradient(to_top,#fef08a_40%,transparent_40%)]">{highlightMatch[1]}</span>;
+    }
+    const tagMatch = part.match(/^<tag>(.*?)<\/tag>$/);
+    if (tagMatch) {
+      return <span key={index} className="text-[#1d9bf0] font-semibold">{tagMatch[1]}</span>;
+    }
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
 }
 
-function renderHighlightText(text: string) {
-  // 支持 <highlight>text</highlight> → 荧光笔效果
-  // 支持 <tag>text</tag> → 蓝色标签
-  const html = text
-    .replace(/<highlight>(.*?)<\/highlight>/g, '<span class="highlight-bg">$1</span>')
-    .replace(/<tag>(.*?)<\/tag>/g, '<span class="tag-blue">$1</span>');
-  return html;
+function handleSelection(field: CardEditorField, onSelectText?: EditHelpers['onSelectText'], itemIndex?: number) {
+  const selected = window.getSelection()?.toString() || '';
+  if (selected.trim()) onSelectText?.(field, selected, itemIndex);
 }
 
-function renderCover(ctx: RenderCtx) {
-  const { title, subtitle, content, image } = ctx;
+function renderEditableText(field: CardEditorField, value: string, className: string, style: React.CSSProperties, helpers: EditHelpers, itemIndex?: number) {
+  const isEditing = !!helpers.activeEditor && helpers.activeEditor.field === field && helpers.activeEditor.itemIndex === itemIndex;
+  if (!helpers.editable) {
+    return <div className={className} style={style}>{renderRichText(value)}</div>;
+  }
+  if (isEditing) {
+    return (
+      <textarea
+        autoFocus
+        value={helpers.editingValue || ''}
+        onChange={e => helpers.onEditingValueChange?.(e.target.value)}
+        onBlur={helpers.onCommitEdit}
+        onKeyDown={e => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
+          if (e.key === 'Escape') helpers.onCancelEdit?.();
+        }}
+        className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none')}
+        style={style}
+      />
+    );
+  }
+  return (
+    <div
+      className={cn(className, 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
+      style={style}
+      onClick={() => helpers.onStartEdit?.(field, itemIndex)}
+      onMouseUp={() => handleSelection(field, helpers.onSelectText, itemIndex)}
+    >
+      {renderRichText(value || '点击编辑')}
+    </div>
+  );
+}
+
+function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
+  const { title, subtitle, image } = ctx;
   return (
     <div className="flex flex-col h-full" style={{ justifyContent: 'flex-start', gap: 0 }}>
-      <div
-        className="text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2"
-        style={{ letterSpacing: '-0.04em', lineHeight: 1.15 }}
-      >
-        {title}
-      </div>
+      {renderEditableText('title', title, 'text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2', { letterSpacing: '-0.04em', lineHeight: 1.15 }, helpers)}
+      {renderEditableText('subtitle', subtitle || '', 'text-[30px] text-[#536471] mt-4 leading-snug', {}, helpers)}
 
-      {subtitle && (
-        <div className="text-[30px] text-[#536471] mt-4 leading-snug">
-          {subtitle}
-        </div>
-      )}
-
-      {/* 图片堆叠区域 */}
       <div className="relative w-full mt-7" style={{ height: '580px' }}>
         {image ? (
           <>
             <img
               src={image}
               className="absolute rounded-[20px] object-cover shadow-lg border border-gray-200"
-              style={{
-                width: '55%', height: '90%', top: '5%', left: 0,
-                zIndex: 2, transform: 'rotate(-2deg)'
-              }}
+              style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
               alt=""
             />
             <div
               className="absolute rounded-[20px] border border-gray-200 shadow-lg"
-              style={{
-                width: '55%', height: '90%', top: 0, right: 0,
-                zIndex: 1, transform: 'rotate(2deg)',
-                background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)'
-              }}
+              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)', background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)' }}
             />
           </>
         ) : (
           <>
-            <div
-              className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center"
-              style={{
-                width: '55%', height: '90%', top: '5%', left: 0,
-                zIndex: 2, transform: 'rotate(-2deg)',
-                background: 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)'
-              }}
+            <button
+              onClick={helpers.onPickImage}
+              className="absolute rounded-[20px] shadow-lg border border-dashed border-gray-300 flex items-center justify-center bg-gradient-to-br from-[#fef2f2] to-[#fee2e2]"
+              style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
             >
-              <Sparkles className="w-32 h-32 text-red-200" />
-            </div>
+              <div className="flex flex-col items-center gap-4 text-red-200">
+                <ImagePlus className="w-24 h-24" />
+                <span className="text-2xl font-bold text-[#0f1419]">点击插入图片</span>
+              </div>
+            </button>
             <div
               className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center"
-              style={{
-                width: '55%', height: '90%', top: 0, right: 0,
-                zIndex: 1, transform: 'rotate(2deg)',
-                background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)'
-              }}
+              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)', background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)' }}
             >
               <Sparkles className="w-28 h-28 text-yellow-300" />
             </div>
           </>
         )}
 
-        {/* 装饰元素 */}
         <svg className="absolute w-12 h-12 z-3" style={{ top: '8%', right: '12%' }} viewBox="0 0 24 24" fill="#fbbf24">
           <path d="M12 2l2.4 7.2L22 9.5l-5.8 5.1 1.7 7.4L12 17.8 6.1 22l1.7-7.4L2 9.5l7.6-.3L12 2z" />
         </svg>
-        <div
-          className="absolute z-3 bg-[#0f1419] text-white font-bold px-5 py-2.5 rounded-xl text-xl whitespace-nowrap tracking-wide"
-          style={{ bottom: '12%', left: '8%' }}
-        >
+        <div className="absolute z-3 bg-[#0f1419] text-white font-bold px-5 py-2.5 rounded-xl text-xl whitespace-nowrap tracking-wide" style={{ bottom: '12%', left: '8%' }}>
           AI VIBE CODING
         </div>
         <div className="absolute z-3 w-4 h-4 rounded-full bg-[#f38ba8]" style={{ top: '18%', left: '62%' }} />
@@ -171,56 +213,40 @@ function renderCover(ctx: RenderCtx) {
   );
 }
 
-function renderText(ctx: RenderCtx) {
+function renderText(ctx: RenderCtx, helpers: EditHelpers) {
   return (
     <>
-      <h2
-        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
-        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
-      >
-        {ctx.title}
-      </h2>
-      <div
-        className="flex-1 min-h-0 overflow-hidden"
-        style={{ fontSize: '36px', color: '#0f1419', lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }}
-        dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
-      />
-      {ctx.image && (
+      {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
+      {renderEditableText('content', ctx.content, 'flex-1 min-h-0 overflow-hidden text-[36px] text-[#0f1419]', { lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }, helpers)}
+      {ctx.image ? (
         <div className="mt-6 mb-4 rounded-3xl overflow-hidden shadow-lg border-4 border-white">
           <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
         </div>
-      )}
+      ) : helpers.editable ? (
+        <button onClick={helpers.onPickImage} className="mt-6 mb-4 rounded-3xl border-2 border-dashed border-gray-300 h-[260px] flex items-center justify-center text-gray-400">
+          <div className="flex flex-col items-center gap-3">
+            <ImagePlus className="w-12 h-12" />
+            <span className="text-[28px] font-bold">点击插图</span>
+          </div>
+        </button>
+      ) : null}
     </>
   );
 }
 
-function renderList(ctx: RenderCtx) {
+function renderList(ctx: RenderCtx, helpers: EditHelpers) {
   const items = ctx.listItems || ctx.content.split('\n').filter(Boolean);
   return (
     <>
-      <h2
-        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
-        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
-      >
-        {ctx.title}
-      </h2>
-      <div
-        className="text-[36px] text-[#0f1419] mb-6 shrink-0"
-        style={{ lineHeight: 1.65 }}
-        dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
-      />
+      {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
+      {renderEditableText('content', ctx.content, 'text-[36px] text-[#0f1419] mb-6 shrink-0', { lineHeight: 1.65 }, helpers)}
       <div className="flex flex-col gap-5 flex-1 overflow-hidden">
         {items.map((item, i) => (
           <div key={i} className="flex gap-4 items-start">
-            <div
-              className="w-9 h-9 rounded-full bg-[#0f1419] flex items-center justify-center text-white font-bold shrink-0 mt-1"
-              style={{ fontSize: '18px' }}
-            >
+            <div className="w-9 h-9 rounded-full bg-[#0f1419] flex items-center justify-center text-white font-bold shrink-0 mt-1" style={{ fontSize: '18px' }}>
               {i + 1}
             </div>
-            <div className="text-[28px] text-[#0f1419] leading-relaxed" style={{ wordBreak: 'keep-all' }}>
-              {item}
-            </div>
+            {renderEditableText('listItem', item, 'text-[28px] text-[#0f1419] leading-relaxed flex-1', { wordBreak: 'keep-all' }, helpers, i)}
           </div>
         ))}
       </div>
@@ -228,25 +254,12 @@ function renderList(ctx: RenderCtx) {
   );
 }
 
-function renderTerminal(ctx: RenderCtx) {
+function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
   const lines = ctx.terminalLines || [];
   return (
     <>
-      {ctx.title && (
-        <h2
-          className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
-          style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
-        >
-          {ctx.title}
-        </h2>
-      )}
-      {ctx.content && (
-        <div
-          className="text-[36px] text-[#0f1419] mb-6 shrink-0"
-          style={{ lineHeight: 1.65 }}
-          dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
-        />
-      )}
+      {ctx.title && renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
+      {ctx.content && renderEditableText('content', ctx.content, 'text-[36px] text-[#0f1419] mb-6 shrink-0', { lineHeight: 1.65 }, helpers)}
       <div className="rounded-[20px] overflow-hidden shadow-lg shrink-0" style={{ background: '#1e1e2e' }}>
         <div className="flex items-center gap-2.5 px-5 py-4" style={{ background: '#313244' }}>
           <div className="w-4 h-4 rounded-full bg-[#f38ba8]" />
@@ -255,48 +268,53 @@ function renderTerminal(ctx: RenderCtx) {
           <div className="flex-1 text-center text-lg text-[#6c7086]">Terminal — zsh</div>
         </div>
         <div className="px-9 py-8 font-mono text-[26px] leading-relaxed" style={{ color: '#cdd6f4' }}>
-          {lines.length > 0 ? lines.map((l, i) => {
+          {lines.length > 0 ? lines.map((line, i) => {
             let colorClass = '';
             let prefix = '';
-            switch (l.type) {
+            switch (line.type) {
               case 'command': colorClass = 'text-[#89b4fa]'; prefix = '~ '; break;
               case 'output': colorClass = 'text-[#6c7086]'; break;
               case 'success': colorClass = 'text-[#a6e3a1]'; prefix = '✓ '; break;
               case 'prompt': colorClass = 'text-[#a6e3a1]'; break;
               default: colorClass = 'text-[#6c7086]';
             }
-            return <div key={i} className={colorClass}>{prefix}{l.text}</div>;
-          }) : (
-            <div className="text-[#6c7086]">No output</div>
-          )}
+            return (
+              <div key={i} className={colorClass} onClick={() => helpers.onStartEdit?.('terminalLine', i)} onMouseUp={() => handleSelection('terminalLine', helpers.onSelectText, i)}>
+                {helpers.activeEditor?.field === 'terminalLine' && helpers.activeEditor?.itemIndex === i ? (
+                  <textarea
+                    autoFocus
+                    value={helpers.editingValue || ''}
+                    onChange={e => helpers.onEditingValueChange?.(e.target.value)}
+                    onBlur={helpers.onCommitEdit}
+                    onKeyDown={e => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
+                      if (e.key === 'Escape') helpers.onCancelEdit?.();
+                    }}
+                    className="w-full rounded-lg border border-[#89b4fa] bg-[#11111b] p-2 outline-none resize-none"
+                  />
+                ) : (
+                  <span className="cursor-text">{prefix}{line.text}</span>
+                )}
+              </div>
+            );
+          }) : <div className="text-[#6c7086]">No output</div>}
         </div>
       </div>
     </>
   );
 }
 
-function renderGrid(ctx: RenderCtx) {
+function renderGrid(ctx: RenderCtx, helpers: EditHelpers) {
   const items = ctx.gridItems || [];
   return (
     <>
-      <h2
-        className="text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0"
-        style={{ letterSpacing: '-0.02em', lineHeight: 1.25 }}
-      >
-        {ctx.title}
-      </h2>
-      {ctx.content && (
-        <div
-          className="text-[36px] text-[#0f1419] mb-6 shrink-0"
-          style={{ lineHeight: 1.65 }}
-          dangerouslySetInnerHTML={{ __html: renderHighlightText(ctx.content) }}
-        />
-      )}
+      {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
+      {ctx.content && renderEditableText('content', ctx.content, 'text-[36px] text-[#0f1419] mb-6 shrink-0', { lineHeight: 1.65 }, helpers)}
       <div className="grid grid-cols-2 gap-5 flex-1 overflow-hidden content-start">
         {items.map((item, i) => (
           <div key={i} className="rounded-[20px] p-7 border" style={{ background: '#f7f9f9', borderColor: '#eff3f4' }}>
-            <div className="font-mono text-[22px] text-[#1d9bf0] font-semibold mb-2.5">{item.name}</div>
-            <div className="text-[22px] text-[#536471] leading-relaxed">{item.desc}</div>
+            {renderEditableText('gridName', item.name, 'font-mono text-[22px] text-[#1d9bf0] font-semibold mb-2.5', {}, helpers, i)}
+            {renderEditableText('gridDesc', item.desc, 'text-[22px] text-[#536471] leading-relaxed', {}, helpers, i)}
           </div>
         ))}
       </div>
@@ -304,9 +322,8 @@ function renderGrid(ctx: RenderCtx) {
   );
 }
 
-/* ——— 主组件 ——— */
-
 export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
+  cardIndex = 0,
   index,
   total,
   title,
@@ -318,36 +335,47 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   listItems,
   terminalLines,
   gridItems,
-  authorInfo = { name: 'Jinger', handle: '@Jinger_Vibe', avatarSeed: 'Jinger' },
-  className
+  authorInfo = { name: 'Jinger', handle: '@Jinger_Vibe', avatarImage: '' },
+  className,
+  editable,
+  activeEditor,
+  editingValue,
+  onEditingValueChange,
+  onStartEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onSelectText,
+  onPickImage,
 }, ref) => {
   const ctx: RenderCtx = { title, content, image, subtitle, listItems, terminalLines, gridItems };
-
-  // 生成时间戳（固定格式，匹配参考风格）
+  const helpers: EditHelpers = {
+    editable,
+    activeEditor: activeEditor?.cardIndex === cardIndex ? activeEditor : null,
+    editingValue,
+    onEditingValueChange,
+    onStartEdit,
+    onCommitEdit,
+    onCancelEdit,
+    onSelectText,
+    onPickImage,
+  };
   const dateStr = '9:05 AM · May 5, 2026 · 522.9K Views';
 
   return (
-    <div
-      ref={ref}
-      className={cn(
-        "relative bg-white overflow-hidden flex flex-col",
-        "w-[1242px] h-[1660px] shrink-0",
-        className
-      )}
-    >
-      {/* ——— 头部 ——— */}
+    <div ref={ref} className={cn('relative bg-white overflow-hidden flex flex-col', 'w-[1242px] h-[1660px] shrink-0', className)}>
       <div className="flex items-start px-20 pt-16 gap-4 shrink-0">
-        <div className="w-20 h-20 rounded-full overflow-hidden bg-red-50 flex-shrink-0">
-          <img
-            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${authorInfo.avatarSeed}`}
-            alt="Avatar"
-            className="w-full h-full object-cover"
-          />
+        <div className="w-20 h-20 rounded-full overflow-hidden bg-red-50 flex-shrink-0 border border-gray-100">
+          {authorInfo.avatarImage ? (
+            <img src={authorInfo.avatarImage} alt="Avatar" className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gray-100 text-gray-300">
+              <UserRound className="w-9 h-9" />
+            </div>
+          )}
         </div>
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <span className="text-[28px] font-bold text-[#0f1419] leading-tight">{authorInfo.name}</span>
-            {/* Verified 徽章 */}
             <svg viewBox="0 0 22 22" className="w-7 h-7 shrink-0">
               <path d="M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.855-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.69-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.636.433 1.221.878 1.69.47.446 1.055.752 1.69.883.635.13 1.294.083 1.902-.143.271.586.702 1.084 1.24 1.438.54.354 1.167.551 1.813.569.646-.018 1.273-.215 1.813-.569.54-.354.97-.853 1.24-1.438.608.226 1.267.276 1.902.143.635-.131 1.22-.437 1.69-.883.445-.469.749-1.054.878-1.69.131-.633.08-1.29-.14-1.896.587-.273 1.084-.705 1.438-1.245.355-.54.553-1.17.57-1.817z" fill="#1d9bf0"/>
               <path d="M9.585 14.929l-3.28-3.28 1.168-1.168 2.112 2.112 5.06-5.06 1.168 1.168-6.228 6.228z" fill="#fff"/>
@@ -358,17 +386,18 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
         <MoreHorizontal className="w-10 h-10 text-[#536471] ml-auto mt-1 shrink-0" />
       </div>
 
-      {/* ——— 内容区域 ——— */}
       <div className="flex-1 px-20 pt-8 flex flex-col overflow-hidden">
-        {isCover ? renderCover(ctx) : (
-          layout === 'list' ? renderList(ctx) :
-          layout === 'terminal' ? renderTerminal(ctx) :
-          layout === 'grid' ? renderGrid(ctx) :
-          renderText(ctx)
-        )}
+        {isCover || layout === 'cover'
+          ? renderCover(ctx, helpers)
+          : layout === 'list'
+            ? renderList(ctx, helpers)
+            : layout === 'terminal'
+              ? renderTerminal(ctx, helpers)
+              : layout === 'grid'
+                ? renderGrid(ctx, helpers)
+                : renderText(ctx, helpers)}
       </div>
 
-      {/* ——— 底部 ——— */}
       <div className="px-20 pb-7 flex flex-col gap-5 shrink-0 mt-auto">
         <div className="text-[22px] text-[#536471] pt-4">{dateStr}</div>
         <div className="h-px w-full" style={{ background: '#eff3f4' }} />
@@ -391,22 +420,11 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
         </div>
       </div>
 
-      {/* ——— 页码 ——— */}
-      <div
-        className="absolute text-[24px] font-semibold"
-        style={{
-          color: '#536471',
-          background: '#f7f9f9',
-          padding: '8px 20px',
-          borderRadius: '20px',
-          bottom: '56px',
-          right: '80px'
-        }}
-      >
+      <div className="absolute text-[24px] font-semibold" style={{ color: '#536471', background: '#f7f9f9', padding: '8px 20px', borderRadius: '20px', bottom: '56px', right: '80px' }}>
         {index}/{total}
       </div>
     </div>
   );
 });
 
-TweetCard.displayName = "TweetCard";
+TweetCard.displayName = 'TweetCard';
