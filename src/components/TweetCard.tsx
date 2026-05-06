@@ -1,5 +1,5 @@
 import React, { forwardRef } from 'react';
-import { MoreHorizontal, Sparkles, ImagePlus, UserRound } from 'lucide-react';
+import { MoreHorizontal, Sparkles, ImagePlus, UserRound, Plus, Trash2 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -7,7 +7,14 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export type CardEditorField = 'title' | 'subtitle' | 'content' | 'listItem' | 'terminalLine' | 'gridName' | 'gridDesc';
+export type CardEditorField = 'title' | 'subtitle' | 'hookText' | 'content' | 'listItem' | 'terminalLine' | 'gridName' | 'gridDesc' | 'blockText';
+
+export type ContentBlock = {
+  type: 'text' | 'image';
+  text?: string;
+  imageIndex?: number;
+  imageData?: string;
+};
 
 type CardProps = {
   cardIndex?: number;
@@ -15,13 +22,20 @@ type CardProps = {
   total: number;
   title: string;
   subtitle?: string;
+  hookText?: string;
   content: string;
   image?: string;
+  image2?: string;
   isCover?: boolean;
   layout?: 'cover' | 'text' | 'list' | 'terminal' | 'grid';
   listItems?: string[];
   terminalLines?: { type: string; text: string }[];
   gridItems?: { name: string; desc: string }[];
+  blocks?: ContentBlock[];
+  blockImages?: (string | undefined)[];
+  coverTags?: string[];
+  generatedAt?: number;
+  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
   authorInfo?: {
     name: string;
     handle: string;
@@ -40,17 +54,26 @@ type CardProps = {
   onCommitEdit?: () => void;
   onCancelEdit?: () => void;
   onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
-  onPickImage?: () => void;
+  onPickImage?: (blockIndex?: number) => void;
+  onMoveBlock?: (fromIndex: number, toIndex: number) => void;
+  onAddBlock?: (type: 'text' | 'image', afterIndex: number) => void;
+  onDeleteBlock?: (index: number) => void;
 };
 
 type RenderCtx = {
   title: string;
   content: string;
   image?: string;
+  image2?: string;
   subtitle?: string;
+  hookText?: string;
   listItems?: string[];
   terminalLines?: { type: string; text: string }[];
   gridItems?: { name: string; desc: string }[];
+  blocks?: ContentBlock[];
+  blockImages?: (string | undefined)[];
+  coverTags?: string[];
+  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
 };
 
 type EditHelpers = {
@@ -62,7 +85,11 @@ type EditHelpers = {
   onCommitEdit?: () => void;
   onCancelEdit?: () => void;
   onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
-  onPickImage?: () => void;
+  onPickImage?: (blockIndex?: number) => void;
+  onMoveBlock?: (fromIndex: number, toIndex: number) => void;
+  onAddBlock?: (type: 'text' | 'image', afterIndex: number) => void;
+  onDeleteBlock?: (index: number) => void;
+  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
 };
 
 function IconReply() {
@@ -106,17 +133,29 @@ function IconShare() {
 }
 
 function renderRichText(text: string) {
-  const parts = text.split(/(<highlight>.*?<\/highlight>|<tag>.*?<\/tag>)/g).filter(Boolean);
-  return parts.map((part, index) => {
-    const highlightMatch = part.match(/^<highlight>(.*?)<\/highlight>$/);
-    if (highlightMatch) {
-      return <span key={index} className="bg-[linear-gradient(to_top,#fef08a_40%,transparent_40%)]">{highlightMatch[1]}</span>;
-    }
-    const tagMatch = part.match(/^<tag>(.*?)<\/tag>$/);
-    if (tagMatch) {
-      return <span key={index} className="text-[#1d9bf0] font-semibold">{tagMatch[1]}</span>;
-    }
-    return <React.Fragment key={index}>{part}</React.Fragment>;
+  const paragraphs = text.split('\n');
+  return paragraphs.map((para, pIdx) => {
+    const parts = para.split(/(<highlight>.*?<\/highlight>|<tag>.*?<\/tag>|\*\*.*?\*\*|\*.*?\*)/g).filter(Boolean);
+    const elements = parts.map((part, index) => {
+      const highlightMatch = part.match(/^<highlight>(.*?)<\/highlight>$/);
+      if (highlightMatch) {
+        return <span key={index} className="bg-[linear-gradient(to_top,#fef08a_40%,transparent_40%)]">{highlightMatch[1]}</span>;
+      }
+      const tagMatch = part.match(/^<tag>(.*?)<\/tag>$/);
+      if (tagMatch) {
+        return <span key={index} className="text-[#1d9bf0] font-semibold">{tagMatch[1]}</span>;
+      }
+      const boldMatch = part.match(/^\*\*(.*?)\*\*$/);
+      if (boldMatch) {
+        return <strong key={index} className="font-black">{boldMatch[1]}</strong>;
+      }
+      const italicMatch = part.match(/^\*(.*?)\*$/);
+      if (italicMatch) {
+        return <em key={index}>{italicMatch[1]}</em>;
+      }
+      return <React.Fragment key={index}>{part}</React.Fragment>;
+    });
+    return <div key={pIdx} className={pIdx > 0 ? 'mt-6' : ''}>{elements}</div>;
   });
 }
 
@@ -125,10 +164,24 @@ function handleSelection(field: CardEditorField, onSelectText?: EditHelpers['onS
   if (selected.trim()) onSelectText?.(field, selected, itemIndex);
 }
 
+const FONT_SIZE_MAP: Record<string, string> = {
+  s: '24px',
+  m: '32px',
+  l: '44px',
+  xl: '58px',
+};
+
 function renderEditableText(field: CardEditorField, value: string, className: string, style: React.CSSProperties, helpers: EditHelpers, itemIndex?: number) {
+  const fmt = helpers.fieldFormatting?.[field];
+  const mergedStyle: React.CSSProperties = {
+    ...style,
+    ...(fmt?.color ? { color: fmt.color } : {}),
+    ...(fmt?.textAlign ? { textAlign: fmt.textAlign as React.CSSProperties['textAlign'] } : {}),
+    ...(fmt?.fontSize ? { fontSize: FONT_SIZE_MAP[fmt.fontSize] } : {}),
+  };
   const isEditing = !!helpers.activeEditor && helpers.activeEditor.field === field && helpers.activeEditor.itemIndex === itemIndex;
   if (!helpers.editable) {
-    return <div className={className} style={style}>{renderRichText(value)}</div>;
+    return <div className={className} style={mergedStyle}>{renderRichText(value)}</div>;
   }
   if (isEditing) {
     return (
@@ -142,14 +195,14 @@ function renderEditableText(field: CardEditorField, value: string, className: st
           if (e.key === 'Escape') helpers.onCancelEdit?.();
         }}
         className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none')}
-        style={style}
+        style={mergedStyle}
       />
     );
   }
   return (
     <div
       className={cn(className, 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
-      style={style}
+      style={mergedStyle}
       onClick={() => helpers.onStartEdit?.(field, itemIndex)}
       onMouseUp={() => handleSelection(field, helpers.onSelectText, itemIndex)}
     >
@@ -159,7 +212,7 @@ function renderEditableText(field: CardEditorField, value: string, className: st
 }
 
 function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
-  const { title, subtitle, image } = ctx;
+  const { title, subtitle, hookText, image, image2, coverTags } = ctx;
   return (
     <div className="flex flex-col h-full" style={{ justifyContent: 'flex-start', gap: 0 }}>
       {renderEditableText('title', title, 'text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2', { letterSpacing: '-0.04em', lineHeight: 1.15 }, helpers)}
@@ -174,15 +227,25 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
               style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
               alt=""
             />
-            <div
-              className="absolute rounded-[20px] border border-gray-200 shadow-lg"
-              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)', background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)' }}
-            />
+            <button
+              onClick={() => helpers.onPickImage?.(-1)}
+              className="absolute rounded-[20px] border border-gray-200 shadow-lg overflow-hidden cursor-pointer flex items-center justify-center"
+              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)' }}
+            >
+              {image2 ? (
+                <img src={image2} className="w-full h-full object-cover" alt="" />
+              ) : (
+                <div className="flex flex-col items-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)' }}>
+                  <ImagePlus className="w-16 h-16 mt-20 text-gray-300" />
+                  <span className="text-xl font-bold text-gray-400">点击上传</span>
+                </div>
+              )}
+            </button>
           </>
         ) : (
           <>
             <button
-              onClick={helpers.onPickImage}
+              onClick={() => helpers.onPickImage?.()}
               className="absolute rounded-[20px] shadow-lg border border-dashed border-gray-300 flex items-center justify-center bg-gradient-to-br from-[#fef2f2] to-[#fee2e2]"
               style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
             >
@@ -191,12 +254,20 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
                 <span className="text-2xl font-bold text-[#0f1419]">点击插入图片</span>
               </div>
             </button>
-            <div
-              className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center"
-              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)', background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)' }}
+            <button
+              onClick={() => helpers.onPickImage?.(-1)}
+              className="absolute rounded-[20px] shadow-lg border border-gray-200 flex items-center justify-center cursor-pointer overflow-hidden"
+              style={{ width: '55%', height: '90%', top: 0, right: 0, zIndex: 1, transform: 'rotate(2deg)' }}
             >
-              <Sparkles className="w-28 h-28 text-yellow-300" />
-            </div>
+              {image2 ? (
+                <img src={image2} className="w-full h-full object-cover" alt="" />
+              ) : (
+                <div className="flex flex-col items-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)' }}>
+                  <ImagePlus className="w-16 h-16 text-yellow-400" />
+                  <span className="text-xl font-bold text-yellow-600">点击上传图片</span>
+                </div>
+              )}
+            </button>
           </>
         )}
 
@@ -209,11 +280,126 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
         <div className="absolute z-3 w-4 h-4 rounded-full bg-[#f38ba8]" style={{ top: '18%', left: '62%' }} />
         <div className="absolute z-3 w-3 h-3 rounded-full bg-[#89b4fa]" style={{ top: '14%', left: '68%' }} />
       </div>
+
+      {/* hookText 引导语 */}
+      {(hookText || helpers.editable) && (
+        <div className="mt-6">
+          {renderEditableText('hookText', hookText || '', 'text-[28px] text-[#536471] leading-relaxed', { lineHeight: 1.6 }, helpers)}
+        </div>
+      )}
+
+      {/* coverTags 标签 */}
+      {coverTags && coverTags.length > 0 && (
+        <div className="flex flex-wrap gap-3 mt-auto pt-6">
+          {coverTags.map((tag, i) => (
+            <span key={i} className="px-5 py-2 rounded-full text-[22px] font-bold" style={{ background: '#fef2f2', color: '#ef4444' }}>
+              #{tag}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
+  const blocks = ctx.blocks;
+  return (
+    <div className="flex flex-col gap-5 flex-1 overflow-hidden min-h-0">
+      {blocks && blocks.map((block, i) => {
+        const isEditingThis = helpers.activeEditor?.field === 'blockText' && helpers.activeEditor?.itemIndex === i;
+        if (block.type === 'image') {
+          const imgSrc = ctx.blockImages?.[i];
+          return (
+            <div key={i} className="relative group/block">
+              {imgSrc ? (
+                <div className="rounded-3xl overflow-hidden shadow-lg border-4 border-white">
+                  <img src={imgSrc} className="w-full object-cover max-h-[500px]" alt="" />
+                </div>
+              ) : helpers.editable ? (
+                <button
+                  onClick={() => helpers.onPickImage?.(i)}
+                  className="w-full rounded-3xl border-2 border-dashed border-gray-300 h-[240px] flex items-center justify-center text-gray-400"
+                >
+                  <div className="flex flex-col items-center gap-3">
+                    <ImagePlus className="w-12 h-12" />
+                    <span className="text-[28px] font-bold">点击插图</span>
+                  </div>
+                </button>
+              ) : null}
+              {helpers.editable && (
+                <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover/block:opacity-100 transition-opacity">
+                  {i > 0 && <button onClick={() => helpers.onMoveBlock?.(i, i - 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↑</button>}
+                  {i < blocks.length - 1 && <button onClick={() => helpers.onMoveBlock?.(i, i + 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↓</button>}
+                  <button onClick={() => helpers.onDeleteBlock?.(i)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-red-400 hover:text-red-600">
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        }
+        return (
+          <div key={i} className="relative group/block">
+            {isEditingThis ? (
+              <textarea
+                autoFocus
+                value={helpers.editingValue || ''}
+                onChange={e => helpers.onEditingValueChange?.(e.target.value)}
+                onBlur={helpers.onCommitEdit}
+                onKeyDown={e => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
+                  if (e.key === 'Escape') helpers.onCancelEdit?.();
+                }}
+                className="w-full rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none text-[36px] text-[#0f1419]"
+                style={{ lineHeight: 1.65 }}
+              />
+            ) : (
+              <div
+                className={cn('text-[36px] text-[#0f1419]', helpers.editable && 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
+                style={{ lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }}
+                onClick={() => helpers.onStartEdit?.('blockText', i)}
+                onMouseUp={() => handleSelection('blockText', helpers.onSelectText, i)}
+              >
+                {renderRichText(block.text || '点击编辑')}
+              </div>
+            )}
+            {helpers.editable && (
+              <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover/block:opacity-100 transition-opacity">
+                {i > 0 && <button onClick={() => helpers.onMoveBlock?.(i, i - 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↑</button>}
+                {i < blocks.length - 1 && <button onClick={() => helpers.onMoveBlock?.(i, i + 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↓</button>}
+                <button onClick={() => helpers.onDeleteBlock?.(i)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-red-400 hover:text-red-600">
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {helpers.editable && (
+        <div className="flex gap-3 mt-2">
+          <button onClick={() => helpers.onAddBlock?.('text', blocks ? blocks.length - 1 : -1)} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 transition-all text-[24px]">
+            <Plus className="w-6 h-6" /> 文字块
+          </button>
+          <button onClick={() => helpers.onAddBlock?.('image', blocks ? blocks.length - 1 : -1)} className="flex items-center gap-2 px-5 py-3 rounded-2xl border-2 border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 transition-all text-[24px]">
+            <ImagePlus className="w-6 h-6" /> 图片块
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 function renderText(ctx: RenderCtx, helpers: EditHelpers) {
+  const blocks = ctx.blocks;
+  if (blocks && blocks.length > 0) {
+    return (
+      <>
+        {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
+        {renderBlockSequence(ctx, helpers)}
+      </>
+    );
+  }
   return (
     <>
       {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
@@ -222,14 +408,8 @@ function renderText(ctx: RenderCtx, helpers: EditHelpers) {
         <div className="mt-6 mb-4 rounded-3xl overflow-hidden shadow-lg border-4 border-white">
           <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
         </div>
-      ) : helpers.editable ? (
-        <button onClick={helpers.onPickImage} className="mt-6 mb-4 rounded-3xl border-2 border-dashed border-gray-300 h-[260px] flex items-center justify-center text-gray-400">
-          <div className="flex flex-col items-center gap-3">
-            <ImagePlus className="w-12 h-12" />
-            <span className="text-[28px] font-bold">点击插图</span>
-          </div>
-        </button>
       ) : null}
+      {renderBlockSequence(ctx, helpers)}
     </>
   );
 }
@@ -250,6 +430,12 @@ function renderList(ctx: RenderCtx, helpers: EditHelpers) {
           </div>
         ))}
       </div>
+      {ctx.image && (
+        <div className="mt-6 rounded-3xl overflow-hidden shadow-lg border-4 border-white shrink-0">
+          <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
+        </div>
+      )}
+      {renderBlockSequence(ctx, helpers)}
     </>
   );
 }
@@ -300,6 +486,12 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
           }) : <div className="text-[#6c7086]">No output</div>}
         </div>
       </div>
+      {ctx.image && (
+        <div className="mt-6 rounded-3xl overflow-hidden shadow-lg border-4 border-white shrink-0">
+          <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
+        </div>
+      )}
+      {renderBlockSequence(ctx, helpers)}
     </>
   );
 }
@@ -318,8 +510,25 @@ function renderGrid(ctx: RenderCtx, helpers: EditHelpers) {
           </div>
         ))}
       </div>
+      {ctx.image && (
+        <div className="mt-6 rounded-3xl overflow-hidden shadow-lg border-4 border-white shrink-0">
+          <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
+        </div>
+      )}
+      {renderBlockSequence(ctx, helpers)}
     </>
   );
+}
+
+function formatBeijingTime(ts: number) {
+  const d = new Date(ts);
+  const parts = Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    month: 'short', day: 'numeric', year: 'numeric',
+  }).formatToParts(d);
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+  return `${get('hour')}:${get('minute')} ${get('dayPeriod')} · ${get('month')} ${get('day')}, ${get('year')} · 522.9K Views`;
 }
 
 export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
@@ -328,13 +537,20 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   total,
   title,
   subtitle,
+  hookText,
   content,
   image,
+  image2,
   isCover = false,
   layout = 'text',
   listItems,
   terminalLines,
   gridItems,
+  blocks,
+  blockImages,
+  coverTags,
+  generatedAt,
+  fieldFormatting,
   authorInfo = { name: 'Jinger', handle: '@Jinger_Vibe', avatarImage: '' },
   className,
   editable,
@@ -346,8 +562,11 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   onCancelEdit,
   onSelectText,
   onPickImage,
+  onMoveBlock,
+  onAddBlock,
+  onDeleteBlock,
 }, ref) => {
-  const ctx: RenderCtx = { title, content, image, subtitle, listItems, terminalLines, gridItems };
+  const ctx: RenderCtx = { title, content, image, image2, subtitle, hookText, listItems, terminalLines, gridItems, blocks, blockImages, coverTags, fieldFormatting };
   const helpers: EditHelpers = {
     editable,
     activeEditor: activeEditor?.cardIndex === cardIndex ? activeEditor : null,
@@ -358,8 +577,12 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
     onCancelEdit,
     onSelectText,
     onPickImage,
+    onMoveBlock,
+    onAddBlock,
+    onDeleteBlock,
+    fieldFormatting,
   };
-  const dateStr = '9:05 AM · May 5, 2026 · 522.9K Views';
+  const dateStr = generatedAt ? formatBeijingTime(generatedAt) : formatBeijingTime(Date.now());
 
   return (
     <div ref={ref} className={cn('relative bg-white overflow-hidden flex flex-col', 'w-[1242px] h-[1660px] shrink-0', className)}>
@@ -399,7 +622,10 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
       </div>
 
       <div className="px-20 pb-7 flex flex-col gap-5 shrink-0 mt-auto">
-        <div className="text-[22px] text-[#536471] pt-4">{dateStr}</div>
+        <div className="flex justify-between items-center pt-4">
+          <div className="text-[22px] text-[#536471]">{dateStr}</div>
+          <div className="text-[22px] text-[#536471] font-semibold">{index}/{total}</div>
+        </div>
         <div className="h-px w-full" style={{ background: '#eff3f4' }} />
         <div className="flex justify-between items-center py-2">
           <div className="flex items-center gap-2.5 text-[22px]" style={{ color: '#536471' }}>
@@ -420,9 +646,6 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
         </div>
       </div>
 
-      <div className="absolute text-[24px] font-semibold" style={{ color: '#536471', background: '#f7f9f9', padding: '8px 20px', borderRadius: '20px', bottom: '56px', right: '80px' }}>
-        {index}/{total}
-      </div>
     </div>
   );
 });

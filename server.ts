@@ -215,7 +215,7 @@ async function startServer() {
 
       const finalPrompt = mode === 'selection'
         ? `你是卡片文案编辑器。请根据用户要求，只改选中的那一小段，不要解释，不要加引号，只返回替换后的纯文本。\n\n字段：${field}\n原卡片 JSON：${JSON.stringify(card)}\n选中文字：${selectedText}\n用户要求：${instruction}`
-        : `你是卡片文案编辑器。请根据用户要求重写整张卡片，但保持原有 layout 类型和整体信息方向。只返回 JSON，不要解释。\n\n原卡片 JSON：${JSON.stringify(card)}\n用户要求：${instruction}\n\n返回格式：{"card":{"title":"...","subtitle":"...","content":"...","layout":"${card.layout || 'text'}","listItems":[],"terminalLines":[],"gridItems":[],"imageIndex":${typeof card.imageIndex === 'number' ? card.imageIndex : 'null'},"isCover":${!!card.isCover}}}`;
+        : `你是卡片文案编辑器。请根据用户要求重写整张卡片，但保持原有 layout 类型和整体信息方向。只返回 JSON，不要解释。\n\n原卡片 JSON：${JSON.stringify(card)}\n用户要求：${instruction}\n\n返回格式：{"card":{"title":"...","subtitle":"...","hookText":"...","content":"...","layout":"${card.layout || 'text'}","listItems":[],"terminalLines":[],"gridItems":[],"blocks":[],"imageIndex":${typeof card.imageIndex === 'number' ? card.imageIndex : 'null'},"imageIndex2":${typeof card.imageIndex2 === 'number' ? card.imageIndex2 : 'null'},"isCover":${!!card.isCover}}}`;
 
       const text = await generateText(config, finalPrompt);
 

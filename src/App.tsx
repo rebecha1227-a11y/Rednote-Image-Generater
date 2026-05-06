@@ -16,20 +16,33 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
-import { TweetCard, type CardEditorField } from './components/TweetCard';
+import Cropper, { type Area } from 'react-easy-crop';
+import { TweetCard, type CardEditorField, type ContentBlock } from './components/TweetCard';
 
 type CardLayout = 'cover' | 'text' | 'list' | 'terminal' | 'grid';
+
+type FieldFormatting = {
+  fontSize?: 's' | 'm' | 'l' | 'xl';
+  color?: string;
+  textAlign?: 'left' | 'center' | 'right';
+};
 
 type BaseCardData = {
   title: string;
   subtitle?: string;
+  hookText?: string;
   content: string;
   imageIndex?: number;
+  imageIndex2?: number;
+  imageData?: string;
+  image2Data?: string;
   isCover?: boolean;
   layout?: CardLayout;
   listItems?: string[];
   terminalLines?: { type: string; text: string }[];
   gridItems?: { name: string; desc: string }[];
+  blocks?: ContentBlock[];
+  fieldFormatting?: Record<string, FieldFormatting>;
 };
 
 type CardData = BaseCardData & {
@@ -53,6 +66,7 @@ type EditorDoc = Omit<ResultData, 'cards'> & {
   images: string[];
   authorInfo: AuthorInfo;
   updatedAt: number;
+  generatedAt: number;
 };
 
 type ActiveEditor = {
@@ -78,7 +92,7 @@ type DraftPayload = {
 };
 
 const DB_NAME = 'rednote-editor-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const DEFAULT_AUTHOR: AuthorInfo = {
   name: 'Jinger',
   handle: '@Jinger_Vibe',
@@ -94,6 +108,7 @@ function openEditorDb() {
       if (!db.objectStoreNames.contains('globalHistory')) db.createObjectStore('globalHistory');
       if (!db.objectStoreNames.contains('cardHistory')) db.createObjectStore('cardHistory');
       if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets');
+      if (!db.objectStoreNames.contains('versions')) db.createObjectStore('versions');
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -131,6 +146,7 @@ function createCardId(index: number) {
 }
 
 function normalizeResultToEditorDoc(result: Omit<ResultData, 'cards'> & { cards: BaseCardData[] }, images: string[], authorInfo: AuthorInfo): EditorDoc {
+  const now = Date.now();
   return {
     caption: result.caption,
     tags: result.tags,
@@ -141,7 +157,8 @@ function normalizeResultToEditorDoc(result: Omit<ResultData, 'cards'> & { cards:
     })),
     images: [...images],
     authorInfo,
-    updatedAt: Date.now(),
+    updatedAt: now,
+    generatedAt: now,
   };
 }
 
@@ -247,11 +264,19 @@ export default function App() {
   const [rewriting, setRewriting] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [hydrated, setHydrated] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showCaption, setShowCaption] = useState(false);
+  const [versions, setVersions] = useState<{ key: string; doc: EditorDoc; savedAt: number }[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [cropState, setCropState] = useState<{ imageSrc: string; cardIndex: number; blockIndex?: number } | null>(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [cropZoom, setCropZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const cardImageInputRef = useRef<HTMLInputElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
-  const pendingCardImageRef = useRef<number | null>(null);
+  const pendingCardImageRef = useRef<{ cardIndex: number; blockIndex?: number } | null>(null);
 
   const activeDoc = editorDoc;
 
@@ -275,6 +300,7 @@ export default function App() {
         if (draft?.doc) {
           const nextDoc: EditorDoc = {
             ...draft.doc,
+            generatedAt: draft.doc.generatedAt || Date.now(),
             images: assetDraft?.images || draft.doc.images || [],
             authorInfo: {
               ...draft.doc.authorInfo,
@@ -471,6 +497,13 @@ export default function App() {
       1. 第一张必为封面 (isCover: true)
       2. 每张卡片内容精炼，像推特截图那样易于阅读
       3. imageIndex 是输入图片数组的索引，如果没有合适图片可不填
+      4. 合理使用<highlight>荧光笔</highlight>和<tag>蓝色标签</tag>突出重点
+
+      卡片结构要求：
+      - 第一张必须是封面（isCover: true, layout: cover）
+      - 封面之后为核心内容，使用 text / list / terminal / grid 混合搭配
+      - 最后一张建议放总结/收藏理由（layout: text）
+      - 卡片数量由内容决定，AI 根据灵感想法的多少自行判断（通常 3-8 张）
 
       输出必须是JSON格式：
       {
@@ -480,6 +513,7 @@ export default function App() {
           {
             "title": "封面标题",
             "subtitle": "封面副标题",
+            "hookText": "封面引导语/钩子文字（吸引读者继续看）",
             "content": "",
             "isCover": true,
             "layout": "cover",
@@ -487,8 +521,13 @@ export default function App() {
           },
           {
             "title": "卡片标题",
-            "content": "卡片正文（支持<highlight>荧光笔</highlight>和<tag>蓝色标签</tag>）",
+            "content": "卡片正文",
             "layout": "text",
+            "blocks": [
+              {"type": "text", "text": "第一段文字"},
+              {"type": "image", "imageIndex": 0},
+              {"type": "text", "text": "第二段文字"}
+            ],
             "listItems": ["列表项1", "列表项2"],
             "terminalLines": [
               {"type": "command", "text": "npm install"},
@@ -503,8 +542,10 @@ export default function App() {
       }
 
       layout 可选值：text（纯文本）、list（带编号列表）、terminal（终端窗口）、grid（命令网格）。
-      text 类型用 content 字段；list 类型用 listItems 字段加 content 作为小标题；terminal 类型用 terminalLines 字段；grid 类型用 gridItems 字段。
-      第一张卡片 layout 固定为 cover。
+      封面卡片：hookText 是引导语（放在图片下方）。
+      text 类型请使用 blocks 字段（内容块序列）来组织正文，每个 block 格式：{"type": "text", "text": "内容"} 或 {"type": "image", "imageIndex": 图片索引}。blocks 里的文字即为卡片正文，不要再单独用 content 字段。
+      list 类型用 listItems 字段加 content 作为小标题；terminal 类型用 terminalLines 字段；grid 类型用 gridItems 字段。
+      封面必须是第一张卡片且 layout 固定为 cover。
       `;
 
       const response = await fetch('/api/generate', {
@@ -613,11 +654,13 @@ export default function App() {
     let value = '';
     if (field === 'title') value = card.title;
     if (field === 'subtitle') value = card.subtitle || '';
+    if (field === 'hookText') value = card.hookText || '';
     if (field === 'content') value = card.content;
     if (field === 'listItem') value = card.listItems?.[itemIndex || 0] || '';
     if (field === 'terminalLine') value = card.terminalLines?.[itemIndex || 0]?.text || '';
     if (field === 'gridName') value = card.gridItems?.[itemIndex || 0]?.name || '';
     if (field === 'gridDesc') value = card.gridItems?.[itemIndex || 0]?.desc || '';
+    if (field === 'blockText' && typeof itemIndex === 'number') value = card.blocks?.[itemIndex]?.text || '';
     setActiveEditor({ cardIndex, field, itemIndex });
     setEditingValue(value);
     setSelectionContext(null);
@@ -629,11 +672,15 @@ export default function App() {
     applyCardUpdate(cardIndex, card => {
       if (field === 'title') card.title = editingValue;
       if (field === 'subtitle') card.subtitle = editingValue;
+      if (field === 'hookText') card.hookText = editingValue;
       if (field === 'content') card.content = editingValue;
       if (field === 'listItem' && typeof itemIndex === 'number' && card.listItems) card.listItems[itemIndex] = editingValue;
       if (field === 'terminalLine' && typeof itemIndex === 'number' && card.terminalLines) card.terminalLines[itemIndex].text = editingValue;
       if (field === 'gridName' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].name = editingValue;
       if (field === 'gridDesc' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].desc = editingValue;
+      if (field === 'blockText' && typeof itemIndex === 'number' && card.blocks) {
+        if (card.blocks[itemIndex]) card.blocks[itemIndex].text = editingValue;
+      }
       return card;
     });
     setActiveEditor(null);
@@ -651,25 +698,117 @@ export default function App() {
     setAiCommentDraft('');
   };
 
-  const handleCardImagePick = (cardIndex: number) => {
-    pendingCardImageRef.current = cardIndex;
+  const handleCardImagePick = (cardIndex: number, blockIndex?: number) => {
+    pendingCardImageRef.current = { cardIndex, blockIndex };
     cardImageInputRef.current?.click();
   };
 
   const handleCardImageChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    const cardIndex = pendingCardImageRef.current;
+    const pending = pendingCardImageRef.current;
     event.target.value = '';
-    if (!file || cardIndex === null || !activeDoc) return;
+    if (!file || pending === null || !activeDoc) return;
     const dataUrl = await readFileAsDataUrl(file);
-    const nextImageIndex = activeDoc.images.length;
     const nextDoc = cloneDoc(activeDoc);
-    nextDoc.images.push(dataUrl);
-    const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
-    nextDoc.cards[cardIndex].imageIndex = nextImageIndex;
+    const previousCard = cloneDoc(nextDoc.cards[pending.cardIndex]);
+    if (pending.blockIndex !== undefined) {
+      if (pending.blockIndex === -1) {
+        nextDoc.cards[pending.cardIndex].image2Data = dataUrl;
+      } else {
+        const blocks = nextDoc.cards[pending.cardIndex].blocks;
+        if (blocks && blocks[pending.blockIndex]) {
+          blocks[pending.blockIndex].imageData = dataUrl;
+        }
+      }
+    } else {
+      nextDoc.cards[pending.cardIndex].imageData = dataUrl;
+    }
     nextDoc.updatedAt = Date.now();
     replaceDoc(nextDoc, true, previousCard);
     pendingCardImageRef.current = null;
+  };
+
+  const getCroppedImg = (imageSrc: string, pixelCrop: Area): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = pixelCrop.width;
+        canvas.height = pixelCrop.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('Canvas context not available')); return; }
+        ctx.drawImage(image, pixelCrop.x, pixelCrop.y, pixelCrop.width, pixelCrop.height, 0, 0, pixelCrop.width, pixelCrop.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.9));
+      };
+      image.onerror = reject;
+      image.src = imageSrc;
+    });
+  };
+
+  const handleCropConfirm = async () => {
+    if (!cropState || !croppedAreaPixels || !activeDoc) return;
+    try {
+      const { imageSrc, cardIndex, blockIndex } = cropState;
+      const croppedImage = await getCroppedImg(imageSrc, croppedAreaPixels);
+      const nextImageIndex = activeDoc.images.length;
+      const nextDoc = cloneDoc(activeDoc);
+      nextDoc.images.push(croppedImage);
+      const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
+      if (blockIndex !== undefined) {
+        if (blockIndex === -1) {
+          nextDoc.cards[cardIndex].imageIndex2 = nextImageIndex;
+        } else {
+          const blocks = nextDoc.cards[cardIndex].blocks;
+          if (blocks && blocks[blockIndex]) {
+            blocks[blockIndex].imageIndex = nextImageIndex;
+          }
+        }
+      } else {
+        nextDoc.cards[cardIndex].imageIndex = nextImageIndex;
+      }
+      nextDoc.updatedAt = Date.now();
+      replaceDoc(nextDoc, true, previousCard);
+    } catch (err) {
+      console.error('Crop failed:', err);
+      setErrorMsg({ title: '图片裁剪失败', detail: '请重试' });
+      setTimeout(() => setErrorMsg(null), 3000);
+    } finally {
+      setCropState(null);
+    }
+  };
+
+  const handleCropCancel = () => setCropState(null);
+
+  const handleCropExistingImage = (cardIndex: number, blockIndex?: number) => {
+    if (!activeDoc) return;
+    const card = activeDoc.cards[cardIndex];
+    let imageSrc: string | undefined;
+    if (blockIndex === -1) {
+      imageSrc = card.image2Data || (card.imageIndex2 !== undefined ? activeDoc.images[card.imageIndex2] : undefined);
+    } else if (blockIndex !== undefined) {
+      const block = card.blocks?.[blockIndex];
+      imageSrc = block?.imageData || (block?.imageIndex !== undefined ? activeDoc.images[block.imageIndex] : undefined);
+    } else {
+      imageSrc = card.imageData || (card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined);
+    }
+    if (!imageSrc) return;
+    setCropState({ imageSrc, cardIndex, blockIndex });
+    setCrop({ x: 0, y: 0 });
+    setCropZoom(1);
+    setCroppedAreaPixels(null);
+  };
+
+  const handleSetCoverImage = (imageIndex: number, side: 'left' | 'right') => {
+    if (!editorDoc || editorDoc.cards.length === 0) return;
+    const nextDoc = cloneDoc(editorDoc);
+    const previousCard = cloneDoc(nextDoc.cards[0]);
+    if (side === 'left') {
+      nextDoc.cards[0].imageIndex = imageIndex;
+    } else {
+      nextDoc.cards[0].imageIndex2 = imageIndex;
+    }
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc, true, previousCard);
   };
 
   const handleAvatarChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -678,6 +817,47 @@ export default function App() {
     if (!file) return;
     const dataUrl = await readFileAsDataUrl(file);
     handleAuthorUpdate({ avatarImage: dataUrl });
+  };
+
+  const handleMoveBlock = (cardIndex: number, fromIndex: number, toIndex: number) => {
+    if (!activeDoc) return;
+    const nextDoc = cloneDoc(activeDoc);
+    const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
+    const blocks = nextDoc.cards[cardIndex].blocks;
+    if (!blocks || fromIndex < 0 || toIndex < 0 || fromIndex >= blocks.length || toIndex >= blocks.length) return;
+    const [moved] = blocks.splice(fromIndex, 1);
+    blocks.splice(toIndex, 0, moved);
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc, true, previousCard);
+  };
+
+  const handleAddBlock = (cardIndex: number, type: 'text' | 'image', afterIndex: number) => {
+    if (!activeDoc) return;
+    const nextDoc = cloneDoc(activeDoc);
+    const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
+    if (!nextDoc.cards[cardIndex].blocks) {
+      nextDoc.cards[cardIndex].blocks = [];
+    }
+    const newBlock: ContentBlock = type === 'text' ? { type: 'text', text: '' } : { type: 'image' };
+    nextDoc.cards[cardIndex].blocks!.splice(afterIndex + 1, 0, newBlock);
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc, true, previousCard);
+    if (type === 'image') {
+      // 立即触发图片选择
+      pendingCardImageRef.current = { cardIndex, blockIndex: afterIndex + 1 };
+      cardImageInputRef.current?.click();
+    }
+  };
+
+  const handleDeleteBlock = (cardIndex: number, blockIndex: number) => {
+    if (!activeDoc) return;
+    const nextDoc = cloneDoc(activeDoc);
+    const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
+    const blocks = nextDoc.cards[cardIndex].blocks;
+    if (!blocks) return;
+    blocks.splice(blockIndex, 1);
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc, true, previousCard);
   };
 
   const handleRewrite = async (mode: 'selection' | 'full-card') => {
@@ -805,6 +985,68 @@ export default function App() {
     setResult(denormalizeEditorDoc(nextDoc));
   };
 
+  type VersionEntry = { key: string; doc: EditorDoc; savedAt: number };
+
+  async function loadVersions() {
+    setLoadingVersions(true);
+    try {
+      const db = await openEditorDb();
+      const [values, keys] = await new Promise<[any[], IDBValidKey[]]>((resolve, reject) => {
+        const tx = db.transaction('versions', 'readonly');
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(new Error('Transaction aborted'));
+        const store = tx.objectStore('versions');
+        let count = 0, vRes: any[], kRes: IDBValidKey[];
+        store.getAll().onsuccess = (e) => { vRes = (e.target as IDBRequest).result; if (++count === 2) resolve([vRes, kRes]); };
+        store.getAllKeys().onsuccess = (e) => { kRes = (e.target as IDBRequest).result; if (++count === 2) resolve([vRes, kRes]); };
+      });
+      const entries: VersionEntry[] = values.map((doc, i) => ({ key: String(keys[i]), doc, savedAt: doc.updatedAt || 0 }));
+      entries.sort((a, b) => b.savedAt - a.savedAt);
+      setVersions(entries);
+    } catch (err) {
+      console.error('Failed to load versions:', err);
+    } finally {
+      setLoadingVersions(false);
+    }
+  }
+
+  const handleManualSave = async () => {
+    if (!activeDoc) return;
+    const key = 'v-' + Date.now();
+    try {
+      const db = await openEditorDb();
+      const tx = db.transaction('versions', 'readwrite');
+      const store = tx.objectStore('versions');
+      store.put(cloneDoc(activeDoc), key);
+      await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+      await loadVersions();
+    } catch (err) {
+      console.error('Failed to save version:', err);
+    }
+  };
+
+  const handleRestoreVersion = async (entry: VersionEntry) => {
+    const restored = cloneDoc(entry.doc);
+    setEditorDoc(restored);
+    setResult(denormalizeEditorDoc(restored));
+    setImages(restored.images);
+    setAuthorInfo(restored.authorInfo);
+    setShowHistory(false);
+  };
+
+  const handleDeleteVersion = async (key: string) => {
+    try {
+      const db = await openEditorDb();
+      const tx = db.transaction('versions', 'readwrite');
+      const store = tx.objectStore('versions');
+      store.delete(key);
+      await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+      setVersions(prev => prev.filter(v => v.key !== key));
+    } catch (err) {
+      console.error('Failed to delete version:', err);
+    }
+  };
+
   return (
     <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden select-none">
       <input ref={cardImageInputRef} type="file" accept="image/*" className="hidden" onChange={handleCardImageChosen} />
@@ -839,11 +1081,16 @@ export default function App() {
             <Redo2 className="w-4 h-4" />
           </button>
           <button
-            onClick={loadMockCards}
-            className="px-4 py-2 rounded-full border border-gray-200 bg-white text-xs font-bold text-gray-600 hover:bg-gray-50 transition-all"
+            onClick={() => { loadVersions(); setShowHistory(true); }}
+            className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-black hover:text-white transition-all"
           >
-            加载测试卡片
+            历史笔记
           </button>
+          {activeDoc && (
+            <button onClick={handleManualSave} className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-black hover:text-white transition-all">
+              手动保存
+            </button>
+          )}
           {activeDoc && (
             <button
               onClick={exportImages}
@@ -857,7 +1104,65 @@ export default function App() {
       </nav>
 
       <main className="flex-1 flex overflow-hidden">
-        <aside className="w-96 bg-white border-r border-gray-200 p-6 flex flex-col gap-8 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+        {showHistory ? (
+          <div className="flex-1 overflow-y-auto p-8 bg-[#f3f4f6]">
+            <div className="max-w-4xl mx-auto">
+              <div className="flex items-center justify-between mb-8">
+                <h1 className="text-2xl font-black tracking-tight">历史笔记 / HISTORY</h1>
+                <button onClick={() => setShowHistory(false)} className="px-6 py-2 rounded-full bg-black text-white text-[11px] font-bold hover:opacity-80 transition-all">← 返回编辑器</button>
+              </div>
+              {loadingVersions ? (
+                <div className="text-center py-20 text-gray-400 text-[13px] font-bold">加载中...</div>
+              ) : versions.length === 0 ? (
+                <div className="text-center py-20">
+                  <p className="text-[13px] font-bold text-gray-400 mb-4">还没有保存过版本</p>
+                  <p className="text-[11px] text-gray-300">在编辑器里点「手动保存」就会出现在这里</p>
+                </div>
+              ) : (
+                <div className="relative">
+                  <div className="absolute left-[19px] top-8 bottom-0 w-0.5 bg-gray-200"></div>
+                  <div className="space-y-6">
+                    {versions.map((entry, idx) => {
+                      const d = new Date(entry.savedAt);
+                      const dateStr = d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+                      const timeStr = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+                      const isFirst = idx === 0;
+                      return (
+                        <div key={entry.key} className="relative pl-12">
+                          <div className={`absolute left-[13px] top-1.5 w-3.5 h-3.5 rounded-full border-2 border-white ${isFirst ? 'bg-black' : 'bg-gray-300'}`}></div>
+                          <div className={`bg-white rounded-2xl border ${isFirst ? 'border-black/20 shadow-lg' : 'border-gray-200'} p-5`}>
+                            <div className="flex items-start justify-between mb-3">
+                              <div>
+                                <span className="text-[11px] font-black text-gray-400">{dateStr}</span>
+                                <span className="text-[11px] font-black text-gray-400 ml-3">{timeStr}</span>
+                                {isFirst && <span className="ml-3 text-[10px] font-black text-black bg-gray-100 px-2 py-0.5 rounded-full">最新</span>}
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => handleRestoreVersion(entry)} className="px-4 py-1.5 rounded-lg bg-black text-white text-[10px] font-bold hover:opacity-80">恢复此版本</button>
+                                <button onClick={() => handleDeleteVersion(entry.key)} className="px-4 py-1.5 rounded-lg border border-gray-200 text-gray-400 text-[10px] font-bold hover:text-red-500 hover:border-red-200">删除</button>
+                              </div>
+                            </div>
+                            <div className="flex gap-4">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[12px] text-gray-700 line-clamp-2 leading-relaxed">{entry.doc.caption || '(无正文)'}</p>
+                                <div className="mt-2 flex gap-1.5">
+                                  <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{entry.doc.cards.length} 张卡片</span>
+                                  <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{entry.doc.tags.length} 个标签</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <aside className="w-96 bg-white border-r border-gray-200 p-6 flex flex-col gap-8 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
           <section className="bg-gray-50 -mx-6 -mt-6 p-6 border-b border-gray-200">
             <button
               onClick={() => setShowSettings(!showSettings)}
@@ -1073,11 +1378,15 @@ export default function App() {
                 {images.map((img, i) => (
                   <div key={i} className="relative aspect-square rounded-lg overflow-hidden border border-gray-100 group shadow-sm">
                     <img src={img} className="w-full h-full object-cover" alt={`asset-${i}`} />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/70 transition-all flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
+                      <button onClick={(e) => { e.stopPropagation(); handleSetCoverImage(i, 'left'); }} className="px-2 py-1 bg-white text-[9px] font-bold rounded-full">封面左图</button>
+                      <button onClick={(e) => { e.stopPropagation(); handleSetCoverImage(i, 'right'); }} className="px-2 py-1 bg-white text-[9px] font-bold rounded-full">封面右图</button>
+                    </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); setImages(prev => prev.filter((_, idx) => idx !== i)); }}
-                      className="absolute inset-0 bg-red-500/80 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-bold"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      ×
                     </button>
                   </div>
                 ))}
@@ -1104,51 +1413,24 @@ export default function App() {
             )}
           </button>
 
-          <button
-            onClick={loadMockCards}
-            className="w-full mt-2 py-2 rounded-full font-bold text-[11px] flex items-center justify-center gap-2 border border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 transition-all"
-          >
-            <Sparkles className="w-3 h-3" />
-            本地测试数据 / MOCK
-          </button>
-
-          {activeDoc && (
-            <section className="flex-1 mt-auto">
-              <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">小红书正文预览 / XHS COPY</h3>
-              <div className="bg-gray-50 p-4 rounded-xl h-[280px] overflow-hidden flex flex-col border border-dashed border-gray-300 relative group">
-                <textarea
-                  value={activeDoc.caption}
-                  onChange={e => setEditorDoc(prev => prev ? { ...prev, caption: e.target.value, updatedAt: Date.now() } : prev)}
-                  className="text-[12px] text-gray-800 leading-relaxed whitespace-pre-wrap flex-1 overflow-y-auto scrollbar-hide bg-transparent outline-none resize-none"
-                />
-                <div className="mt-4 flex flex-wrap gap-1">
-                  {activeDoc.tags.map((t, idx) => (
-                    <input
-                      key={`${t}-${idx}`}
-                      value={t}
-                      onChange={e => setEditorDoc(prev => {
-                        if (!prev) return prev;
-                        const next = cloneDoc(prev);
-                        next.tags[idx] = e.target.value;
-                        next.updatedAt = Date.now();
-                        return next;
-                      })}
-                      className="min-w-[72px] rounded bg-white px-2 py-1 text-red-500 font-bold text-[11px] outline-none"
-                    />
-                  ))}
-                </div>
-                <button onClick={copyCaption} className="absolute bottom-3 right-3 p-2 bg-white rounded-lg shadow-md border border-gray-100 text-gray-500 hover:text-red-500 transition-colors">
-                  <Clipboard className="w-4 h-4" />
-                </button>
-              </div>
-            </section>
-          )}
         </aside>
 
         <section className="flex-1 p-8 overflow-y-auto relative flex flex-col items-center bg-[#f3f4f6]">
-          <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black uppercase tracking-widest">
-            <span className="pb-1 cursor-default border-b-2" style={{ color: '#836638', borderColor: '#e0b01a' }}>预览模式 / PREVIEW</span>
-            <span className="text-gray-400 cursor-default">编辑草稿 / DRAFT</span>
+          <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black uppercase tracking-widest items-center">
+            <button
+              onClick={() => setShowCaption(false)}
+              className={`pb-1 border-b-2 transition-all ${!showCaption ? '' : 'border-transparent hover:border-gray-300'}`}
+              style={{ color: '#836638', borderColor: !showCaption ? '#e0b01a' : undefined }}
+            >预览模式 / PREVIEW</button>
+            {activeDoc && (
+              <button
+                onClick={() => setShowCaption(!showCaption)}
+                className={`pb-1 border-b-2 transition-all ${showCaption ? '' : 'border-transparent hover:border-gray-300'}`}
+                style={{ color: '#836638', borderColor: showCaption ? '#e0b01a' : undefined }}
+              >
+                正文 / COPY
+              </button>
+            )}
           </div>
 
           {!activeDoc ? (
@@ -1158,8 +1440,42 @@ export default function App() {
               </div>
               <p className="font-black text-xs uppercase tracking-[0.2em] italic">Waiting for Magic...</p>
             </div>
+          ) : showCaption ? (
+            <div className="w-full max-w-2xl mx-auto mt-12 pb-24 px-4">
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">正文编辑 / CAPTION</h3>
+                <textarea
+                  value={activeDoc.caption}
+                  onChange={e => setEditorDoc(prev => prev ? { ...prev, caption: e.target.value, updatedAt: Date.now() } : prev)}
+                  className="w-full h-[500px] text-[14px] text-gray-800 leading-relaxed whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50/60 p-5 outline-none resize-none"
+                />
+                <div className="mt-4 flex flex-wrap gap-1.5">
+                  {activeDoc.tags.map((t, idx) => (
+                    <input
+                      key={`${t}-${idx}`}
+                      value={t}
+                      onChange={e => setEditorDoc(prev => {
+                        if (!prev) return prev;
+                        const next = structuredClone(prev);
+                        next.tags[idx] = e.target.value;
+                        next.updatedAt = Date.now();
+                        return next;
+                      })}
+                      className="min-w-[72px] rounded-lg bg-gray-50 px-2.5 py-1.5 text-red-500 font-bold text-[11px] outline-none border border-gray-200"
+                    />
+                  ))}
+                </div>
+                <button onClick={copyCaption} className="mt-4 w-full rounded-xl bg-black px-4 py-2.5 text-[11px] font-bold text-white flex items-center justify-center gap-2">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                  </svg>
+                  复制正文到剪贴板
+                </button>
+              </div>
+            </div>
           ) : (
-            <div className="w-full max-w-lg mt-12 flex flex-col gap-12 items-center pb-24">
+            <div className="w-full mt-12 pb-24 flex flex-col items-center">
+              <div className="flex flex-col gap-12 items-center">
               {activeDoc.cards.map((card, i) => (
                 <div key={card.id} className="flex flex-col items-center gap-4 group">
                   <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{ width: '434px', height: '581px' }}>
@@ -1171,14 +1487,21 @@ export default function App() {
                         total={activeDoc.cards.length}
                         title={card.title}
                         subtitle={card.subtitle}
+                        hookText={card.hookText}
                         content={card.content}
                         isCover={card.isCover}
                         layout={card.layout}
                         listItems={card.listItems}
                         terminalLines={card.terminalLines}
                         gridItems={card.gridItems}
-                        image={card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined}
+                        blocks={card.blocks}
+                        blockImages={card.blocks?.map(b => b.type === 'image' ? (b.imageData || (b.imageIndex !== undefined ? activeDoc.images[b.imageIndex] : undefined)) : undefined)}
+                        coverTags={card.isCover ? activeDoc.tags : undefined}
+                        fieldFormatting={card.fieldFormatting}
+                        image={card.imageData || (card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined)}
+                        image2={card.image2Data || (card.imageIndex2 !== undefined ? activeDoc.images[card.imageIndex2] : undefined)}
                         authorInfo={activeDoc.authorInfo}
+                        generatedAt={activeDoc.generatedAt || Date.now()}
                         className="scale-100"
                         editable
                         activeEditor={activeEditor}
@@ -1188,7 +1511,10 @@ export default function App() {
                         onCommitEdit={commitEditing}
                         onCancelEdit={cancelEditing}
                         onSelectText={(field, selectedText, itemIndex) => handleTextSelection(i, field, selectedText, itemIndex)}
-                        onPickImage={() => handleCardImagePick(i)}
+                        onPickImage={(blockIndex) => handleCardImagePick(i, blockIndex)}
+                        onMoveBlock={(from, to) => handleMoveBlock(i, from, to)}
+                        onAddBlock={(type, afterIndex) => handleAddBlock(i, type, afterIndex)}
+                        onDeleteBlock={(blockIndex) => handleDeleteBlock(i, blockIndex)}
                       />
                     </div>
                   </div>
@@ -1203,6 +1529,16 @@ export default function App() {
                       <ImageIcon className="w-3 h-3" />
                       <span>{card.imageIndex !== undefined ? '换图' : '插图'}</span>
                     </button>
+                    {card.imageIndex !== undefined && (
+                      <button onClick={() => handleCropExistingImage(i)} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1">
+                        裁剪
+                      </button>
+                    )}
+                    {card.isCover && card.imageIndex2 !== undefined && (
+                      <button onClick={() => handleCropExistingImage(i, -1)} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1">
+                        裁剪右图
+                      </button>
+                    )}
                     <button onClick={() => handleUndoCard(i)} disabled={!cardHistory[card.id]?.past?.length} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1 disabled:opacity-40">
                       <Undo2 className="w-3 h-3" />
                       <span>单卡撤销</span>
@@ -1215,6 +1551,7 @@ export default function App() {
                 </div>
               ))}
             </div>
+            </div>
           )}
 
           <div className="fixed bottom-12 left-1/2 -translate-x-[calc(50%-180px)] xl:-translate-x-[calc(50%-192px)] flex items-center gap-3 px-5 py-2.5 bg-white/90 backdrop-blur-md rounded-full shadow-2xl border border-white/50 z-20 transition-all hover:scale-105">
@@ -1224,25 +1561,65 @@ export default function App() {
             </span>
           </div>
 
+          {cropState && (
+            <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center">
+              <div className="bg-white rounded-2xl p-6 w-[600px] shadow-2xl">
+                <h3 className="text-[13px] font-black uppercase tracking-widest mb-4">裁剪图片 / CROP</h3>
+                <div className="relative h-[400px] rounded-xl overflow-hidden bg-gray-900">
+                  <Cropper
+                    image={cropState.imageSrc}
+                    crop={crop}
+                    zoom={cropZoom}
+                    aspect={1}
+                    onCropChange={setCrop}
+                    onZoomChange={setCropZoom}
+                    onCropComplete={(_, pixelCrop) => setCroppedAreaPixels(pixelCrop)}
+                  />
+                </div>
+                <div className="mt-4 flex items-center gap-4">
+                  <input type="range" min={1} max={3} step={0.1} value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} className="flex-1" />
+                </div>
+                <div className="mt-4 flex gap-3">
+                  <button onClick={handleCropConfirm} className="flex-1 rounded-xl bg-black py-3 text-[12px] font-bold text-white">确认裁剪</button>
+                  <button onClick={handleCropCancel} className="flex-1 rounded-xl border border-gray-200 py-3 text-[12px] font-bold text-gray-500">取消</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {selectionContext && (
             <div className="fixed right-8 bottom-24 w-80 rounded-2xl border border-gray-200 bg-white shadow-2xl p-4 z-30">
               <div className="flex items-start justify-between gap-3 mb-3">
-                <div>
+                <div className="flex-1 min-w-0">
                   <div className="text-[11px] font-black text-gray-700 uppercase tracking-widest flex items-center gap-2">
                     <MessageSquarePlus className="w-3 h-3" />
-                    AI 继续修改
+                    文字编辑 / TEXT EDIT
                   </div>
-                  <p className="mt-2 text-[11px] text-gray-500 leading-relaxed line-clamp-3">“{selectionContext.selectedText}”</p>
+                  <p className="mt-2 text-[11px] text-gray-500 leading-relaxed line-clamp-2 truncate">“{selectionContext.selectedText}”</p>
                 </div>
-                <button onClick={() => setSelectionContext(null)} className="text-gray-300 hover:text-gray-500">
+                <button onClick={() => setSelectionContext(null)} className="text-gray-300 hover:text-gray-500 shrink-0">
                   <X className="w-4 h-4" />
                 </button>
               </div>
+
+              <button
+                onClick={() => {
+                  const { cardIndex, field, itemIndex } = selectionContext;
+                  startEditing(cardIndex, field, itemIndex);
+                }}
+                className="w-full rounded-xl bg-black px-3 py-2.5 text-[11px] font-bold text-white mb-3"
+              >
+                自行编辑
+              </button>
+
+              <div className="h-px bg-gray-100 my-3" />
+
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">AI 辅助修改</p>
               <textarea
                 value={aiCommentDraft}
                 onChange={e => setAiCommentDraft(e.target.value)}
                 placeholder="比如：这句话更犀利一点 / 更像小红书语气 / 更具体一点"
-                className="w-full h-24 rounded-xl border border-gray-200 bg-gray-50/60 p-3 text-[12px] outline-none resize-none"
+                className="w-full h-20 rounded-xl border border-gray-200 bg-gray-50/60 p-3 text-[12px] outline-none resize-none"
               />
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
@@ -1262,7 +1639,76 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* 格式工具栏 */}
+          {activeEditor && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-2xl shadow-2xl border border-gray-200 px-4 py-2.5 z-30 flex items-center gap-1.5">
+              <button
+                onClick={() => { const t = document.activeElement as HTMLTextAreaElement; if (!t) return; const s = t.selectionStart, e = t.selectionEnd, v = editingValue; const sel = v.substring(s, e); const r = sel ? `**${sel}**` : '**'; setEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 2, s + 2 + (sel ? sel.length : 0)); }); }}
+                className="w-8 h-8 rounded-lg hover:bg-gray-100 text-[13px] font-black text-gray-700"
+                title="加粗"
+              >B</button>
+              <button
+                onClick={() => { const t = document.activeElement as HTMLTextAreaElement; if (!t) return; const s = t.selectionStart, e = t.selectionEnd, v = editingValue; const sel = v.substring(s, e); const r = sel ? `*${sel}*` : '*'; setEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 1, s + 1 + (sel ? sel.length : 0)); }); }}
+                className="w-8 h-8 rounded-lg hover:bg-gray-100 text-[14px] italic font-serif text-gray-700"
+                title="斜体"
+              >I</button>
+
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+
+              <select
+                value={(() => { const f = editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]; return f?.fontSize || 'm'; })()}
+                onChange={e => { if (!editorDoc) return; const v = e.target.value as FieldFormatting['fontSize']; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.fontSize = v; return card; }); }}
+                className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 outline-none bg-white"
+                title="字号"
+              >
+                <option value="s">小</option>
+                <option value="m">中</option>
+                <option value="l">大</option>
+                <option value="xl">超大</option>
+              </select>
+
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+
+              {/* 颜色色板 */}
+              <div className="relative group">
+                <button className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-[16px]" title="文字颜色">🎨</button>
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex bg-white rounded-xl shadow-2xl border border-gray-200 p-2 gap-1">
+                  {['#0f1419','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#6b7280','#ffffff'].map(c => (
+                    <button
+                      key={c}
+                      onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.color = c === '#0f1419' ? undefined : c; return card; }); }}
+                      className="w-6 h-6 rounded-full border border-gray-200 shrink-0 hover:scale-125 transition-transform"
+                      style={{ backgroundColor: c, borderColor: c === '#ffffff' ? '#d1d5db' : undefined }}
+                      title={c}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+
+              <button
+                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'left'; return card; }); }}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'left' || !editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                title="左对齐"
+              >≡</button>
+              <button
+                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'center'; return card; }); }}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'center' ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                title="居中"
+              >≡</button>
+              <button
+                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'right'; return card; }); }}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'right' ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                title="右对齐"
+              >≡</button>
+            </div>
+          )}
+
         </section>
+          </>
+        )}
       </main>
 
       <footer className="h-8 bg-white border-t border-gray-200 px-6 flex items-center justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest shrink-0">
