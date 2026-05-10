@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useDropzone } from 'react-dropzone';
 import { toPng } from 'html-to-image';
 import {
@@ -12,12 +13,11 @@ import {
   Image as ImageIcon,
   Undo2,
   Redo2,
-  MessageSquarePlus,
   UserRound,
   X,
 } from 'lucide-react';
 import Cropper, { type Area } from 'react-easy-crop';
-import { TweetCard, type CardEditorField, type ContentBlock } from './components/TweetCard';
+import { TweetCard, getAdaptiveImageBlockHeight, type CardEditorField, type ContentBlock } from './components/TweetCard';
 
 type CardLayout = 'cover' | 'text' | 'list' | 'terminal' | 'grid';
 
@@ -80,6 +80,8 @@ type SelectionContext = {
   field: CardEditorField;
   itemIndex?: number;
   selectedText: string;
+  anchorX: number;
+  anchorY: number;
 } | null;
 
 type CardHistoryMap = Record<string, { past: CardData[]; future: CardData[] }>;
@@ -176,9 +178,34 @@ function replaceFirst(text: string, search: string, replacement: string) {
   return `${text.slice(0, index)}${replacement}${text.slice(index + search.length)}`;
 }
 
+function readFieldValue(card: CardData, field: CardEditorField, itemIndex?: number) {
+  if (field === 'title') return card.title;
+  if (field === 'subtitle') return card.subtitle || '';
+  if (field === 'hookText') return card.hookText || '';
+  if (field === 'content') return card.content;
+  if (field === 'listItem') return card.listItems?.[itemIndex || 0] || '';
+  if (field === 'terminalLine') return card.terminalLines?.[itemIndex || 0]?.text || '';
+  if (field === 'gridName') return card.gridItems?.[itemIndex || 0]?.name || '';
+  if (field === 'gridDesc') return card.gridItems?.[itemIndex || 0]?.desc || '';
+  if (field === 'blockText' && typeof itemIndex === 'number') return card.blocks?.[itemIndex]?.text || '';
+  return '';
+}
+
+function writeFieldValue(card: CardData, field: CardEditorField, itemIndex: number | undefined, value: string) {
+  if (field === 'title') card.title = value;
+  if (field === 'subtitle') card.subtitle = value;
+  if (field === 'hookText') card.hookText = value;
+  if (field === 'content') card.content = value;
+  if (field === 'listItem' && typeof itemIndex === 'number' && card.listItems) card.listItems[itemIndex] = value;
+  if (field === 'terminalLine' && typeof itemIndex === 'number' && card.terminalLines) card.terminalLines[itemIndex].text = value;
+  if (field === 'gridName' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].name = value;
+  if (field === 'gridDesc' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].desc = value;
+  if (field === 'blockText' && typeof itemIndex === 'number' && card.blocks?.[itemIndex]) card.blocks[itemIndex].text = value;
+}
+
 function createMockResult(): ResultData {
   return {
-    caption: '今天分享 3 个 Claude Code 提高做网页效率的小技巧。\n\n第一个是先用计划模式把需求收紧，第二个是让卡片文案结构化，第三个是边改边看预览，效率会高很多。',
+    caption: '用了 Claude Code 三个月，做网页的速度翻了三倍，来分享几个真正有用的小技巧 👇\n\n✅ 技巧一：先把需求压小\n不要一上来就说"帮我做一个完整的网站"。先拆成最小可见步骤，比如"先做导航栏"，做完再说"再加内容区"。这样节奏轻松，方向也不容易跑偏。\n\n✅ 技巧二：列表卡片效率最高\n遇到步骤型内容，直接用 list 布局。读者一眼就能扫完，收藏率也更高。不要把所有东西都堆成一大段正文。\n\n✅ 技巧三：边改边预览，不要攒着看\n每改一小步就打开浏览器看一下效果。问题暴露得越早，返工越少。等全写完再看，往往发现方向就错了。\n\n这三个习惯用下来，做网页不只是快，最重要的是不会在一个问题上卡住很久。\n\n如果你也在 vibe coding，收藏这篇，下次用得上 ✨',
     tags: ['ClaudeCode', 'VibeCoding', '小红书排版'],
     cards: [
       {
@@ -260,8 +287,11 @@ export default function App() {
   const [activeEditor, setActiveEditor] = useState<ActiveEditor>(null);
   const [editingValue, setEditingValue] = useState('');
   const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);
+  const [showAiRewritePanel, setShowAiRewritePanel] = useState(false);
   const [aiCommentDraft, setAiCommentDraft] = useState('');
   const [rewriting, setRewriting] = useState(false);
+  const [captionInstruction, setCaptionInstruction] = useState('');
+  const [rewritingCaption, setRewritingCaption] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [hydrated, setHydrated] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -272,13 +302,20 @@ export default function App() {
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [cropZoom, setCropZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [activeEditorRect, setActiveEditorRect] = useState<DOMRect | null>(null);
+  const [editorAnchorRect, setEditorAnchorRect] = useState<DOMRect | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const cardImageInputRef = useRef<HTMLInputElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCardImageRef = useRef<{ cardIndex: number; blockIndex?: number } | null>(null);
+  const editingValueRef = useRef(editingValue);
+  const editorDocRef = useRef<EditorDoc | null>(null);
 
   const activeDoc = editorDoc;
+  const getActiveTextarea = () => document.querySelector('textarea[data-card-editor-active="true"]') as HTMLTextAreaElement | null;
+  const overlayRoot = typeof document !== 'undefined' ? document.body : null;
 
   React.useEffect(() => {
     localStorage.setItem('authorInfo', JSON.stringify(authorInfo));
@@ -362,6 +399,53 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [hydrated, editorDoc, globalPast, globalFuture, cardHistory]);
 
+  React.useEffect(() => {
+    if (!selectionContext) setShowAiRewritePanel(false);
+  }, [selectionContext]);
+
+  React.useEffect(() => {
+    editingValueRef.current = editingValue;
+  }, [editingValue]);
+
+  React.useEffect(() => {
+    editorDocRef.current = editorDoc;
+  }, [editorDoc]);
+
+  const updateEditingValue = (value: string) => {
+    editingValueRef.current = value;
+    setEditingValue(value);
+  };
+
+  const syncEditorDocState = (nextDoc: EditorDoc | null) => {
+    editorDocRef.current = nextDoc;
+    setEditorDoc(nextDoc);
+  };
+
+  React.useEffect(() => {
+    if (!activeEditor) {
+      setActiveEditorRect(null);
+      return;
+    }
+    const updateRect = () => {
+      const t = getActiveTextarea();
+      setActiveEditorRect(t?.getBoundingClientRect() || null);
+    };
+    const id = requestAnimationFrame(updateRect);
+    window.addEventListener('resize', updateRect);
+    window.addEventListener('scroll', updateRect, true);
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener('resize', updateRect);
+      window.removeEventListener('scroll', updateRect, true);
+    };
+  }, [activeEditor]);
+
+  React.useEffect(() => {
+    if (!activeEditor) return;
+    const t = getActiveTextarea();
+    setActiveEditorRect(t?.getBoundingClientRect() || null);
+  }, [activeEditor, editingValue]);
+
   const fetchModels = async () => {
     if (!apiConfig.apiKey || apiConfig.provider !== 'openai') return;
     setFetchingModels(true);
@@ -410,10 +494,12 @@ export default function App() {
   };
 
   const replaceDoc = (nextDoc: EditorDoc, pushHistory = true, previousCard?: CardData) => {
-    if (editorDoc && pushHistory) {
-      pushGlobalSnapshot(editorDoc);
+    const currentDoc = editorDocRef.current;
+    if (currentDoc && pushHistory) {
+      pushGlobalSnapshot(currentDoc);
       if (previousCard) pushCardSnapshot(previousCard);
     }
+    editorDocRef.current = nextDoc;
     setEditorDoc(nextDoc);
     setResult(denormalizeEditorDoc(nextDoc));
     setImages(nextDoc.images);
@@ -422,8 +508,9 @@ export default function App() {
   };
 
   const applyCardUpdate = (cardIndex: number, updater: (card: CardData, doc: EditorDoc) => CardData) => {
-    if (!editorDoc) return;
-    const nextDoc = cloneDoc(editorDoc);
+    const currentDoc = editorDocRef.current;
+    if (!currentDoc) return;
+    const nextDoc = cloneDoc(currentDoc);
     const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
     nextDoc.cards[cardIndex] = updater(cloneDoc(nextDoc.cards[cardIndex]), nextDoc);
     nextDoc.updatedAt = Date.now();
@@ -507,7 +594,7 @@ export default function App() {
 
       输出必须是JSON格式：
       {
-        "caption": "符合风格的文案正文",
+        "caption": "完整的小红书笔记正文（300-500字）。结构：开头2行吸睛钩子 → 主体内容（分段讲清核心观点，每段1-3句）→ 结尾收藏引导。语气符合所选风格。不要省略，写完整。",
         "tags": ["标签1", "标签2"],
         "cards": [
           {
@@ -587,7 +674,7 @@ export default function App() {
               const nextResult = data as Omit<ResultData, 'cards'> & { cards: BaseCardData[] };
               const nextDoc = normalizeResultToEditorDoc(nextResult, images, authorInfo);
               setResult(denormalizeEditorDoc(nextDoc));
-              setEditorDoc(nextDoc);
+              syncEditorDocState(nextDoc);
               setGlobalPast([]);
               setGlobalFuture([]);
               setCardHistory({});
@@ -607,7 +694,7 @@ export default function App() {
           const nextResult = data as Omit<ResultData, 'cards'> & { cards: BaseCardData[] };
           const nextDoc = normalizeResultToEditorDoc(nextResult, images, authorInfo);
           setResult(denormalizeEditorDoc(nextDoc));
-          setEditorDoc(nextDoc);
+          syncEditorDocState(nextDoc);
           setGlobalPast([]);
           setGlobalFuture([]);
           setCardHistory({});
@@ -625,19 +712,43 @@ export default function App() {
 
   const exportImages = async () => {
     if (!activeDoc) return;
-    for (let i = 0; i < activeDoc.cards.length; i++) {
-      const el = cardRefs.current[i];
+    setIsExporting(true);
+    try {
+      await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+      for (let i = 0; i < activeDoc.cards.length; i++) {
+        const el = cardRefs.current[i];
+        if (el) {
+          const dataUrl = await toPng(el, {
+            pixelRatio: 1,
+            width: 1242,
+            height: 1660,
+          });
+          const link = document.createElement('a');
+          link.download = `card-${i + 1}.png`;
+          link.href = dataUrl;
+          link.click();
+        }
+      }
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const exportSingleCard = async (cardIndex: number) => {
+    if (!activeDoc) return;
+    setIsExporting(true);
+    try {
+      await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+      const el = cardRefs.current[cardIndex];
       if (el) {
-        const dataUrl = await toPng(el, {
-          pixelRatio: 1,
-          width: 1242,
-          height: 1660,
-        });
+        const dataUrl = await toPng(el, { pixelRatio: 1, width: 1242, height: 1660 });
         const link = document.createElement('a');
-        link.download = `card-${i + 1}.png`;
+        link.download = `card-${cardIndex + 1}.png`;
         link.href = dataUrl;
         link.click();
       }
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -648,21 +759,34 @@ export default function App() {
     alert('已复制到剪贴板');
   };
 
-  const startEditing = (cardIndex: number, field: CardEditorField, itemIndex?: number) => {
+  const handleRewriteCaption = async () => {
+    if (!activeDoc || !captionInstruction.trim()) return;
+    setRewritingCaption(true);
+    try {
+      const res = await fetch('/api/rewrite-caption', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caption: activeDoc.caption, instruction: captionInstruction, config: apiConfig }),
+      });
+      const text = await res.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch { throw new Error(`服务器响应异常：${text.slice(0, 100)}`); }
+      if (!res.ok || data.error) { throw new Error(data.error || `HTTP ${res.status}`); }
+      replaceDoc({ ...activeDoc, caption: data.caption, updatedAt: Date.now() });
+      setCaptionInstruction('');
+    } catch (e: any) {
+      setErrorMsg({ title: 'AI 优化失败', detail: e.message || '' });
+    } finally {
+      setRewritingCaption(false);
+    }
+  };
+
+  const startEditing = (cardIndex: number, field: CardEditorField, itemIndex?: number, anchorRect?: DOMRect) => {
     if (!activeDoc) return;
     const card = activeDoc.cards[cardIndex];
-    let value = '';
-    if (field === 'title') value = card.title;
-    if (field === 'subtitle') value = card.subtitle || '';
-    if (field === 'hookText') value = card.hookText || '';
-    if (field === 'content') value = card.content;
-    if (field === 'listItem') value = card.listItems?.[itemIndex || 0] || '';
-    if (field === 'terminalLine') value = card.terminalLines?.[itemIndex || 0]?.text || '';
-    if (field === 'gridName') value = card.gridItems?.[itemIndex || 0]?.name || '';
-    if (field === 'gridDesc') value = card.gridItems?.[itemIndex || 0]?.desc || '';
-    if (field === 'blockText' && typeof itemIndex === 'number') value = card.blocks?.[itemIndex]?.text || '';
     setActiveEditor({ cardIndex, field, itemIndex });
-    setEditingValue(value);
+    setEditorAnchorRect(anchorRect || null);
+    updateEditingValue(readFieldValue(card, field, itemIndex));
     setSelectionContext(null);
   };
 
@@ -670,32 +794,51 @@ export default function App() {
     if (!activeEditor || !activeDoc) return;
     const { cardIndex, field, itemIndex } = activeEditor;
     applyCardUpdate(cardIndex, card => {
-      if (field === 'title') card.title = editingValue;
-      if (field === 'subtitle') card.subtitle = editingValue;
-      if (field === 'hookText') card.hookText = editingValue;
-      if (field === 'content') card.content = editingValue;
-      if (field === 'listItem' && typeof itemIndex === 'number' && card.listItems) card.listItems[itemIndex] = editingValue;
-      if (field === 'terminalLine' && typeof itemIndex === 'number' && card.terminalLines) card.terminalLines[itemIndex].text = editingValue;
-      if (field === 'gridName' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].name = editingValue;
-      if (field === 'gridDesc' && typeof itemIndex === 'number' && card.gridItems) card.gridItems[itemIndex].desc = editingValue;
-      if (field === 'blockText' && typeof itemIndex === 'number' && card.blocks) {
-        if (card.blocks[itemIndex]) card.blocks[itemIndex].text = editingValue;
-      }
+      writeFieldValue(card, field, itemIndex, editingValue);
       return card;
     });
     setActiveEditor(null);
-    setEditingValue('');
+    setEditorAnchorRect(null);
+    updateEditingValue('');
   };
 
   const cancelEditing = () => {
     setActiveEditor(null);
-    setEditingValue('');
+    setEditorAnchorRect(null);
+    updateEditingValue('');
   };
 
   const handleTextSelection = (cardIndex: number, field: CardEditorField, selectedText: string, itemIndex?: number) => {
     if (!selectedText.trim()) return;
-    setSelectionContext({ cardIndex, field, itemIndex, selectedText: selectedText.trim() });
+    const sel = window.getSelection();
+    const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    const rect = range?.getBoundingClientRect();
+    const anchorX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const anchorY = rect ? rect.bottom : window.innerHeight / 2;
+    setSelectionContext({ cardIndex, field, itemIndex, selectedText: selectedText.trim(), anchorX, anchorY });
+    setShowAiRewritePanel(false);
     setAiCommentDraft('');
+  };
+
+  const syncSelectionFromActiveTextarea = () => {
+    if (!activeEditor) return false;
+    const t = getActiveTextarea();
+    if (!t) return false;
+    const s = t.selectionStart ?? 0;
+    const e = t.selectionEnd ?? 0;
+    if (e <= s) return false;
+    const selectedText = (t.value || '').slice(s, e).trim();
+    if (!selectedText) return false;
+    const rect = t.getBoundingClientRect();
+    setSelectionContext({
+      cardIndex: activeEditor.cardIndex,
+      field: activeEditor.field,
+      itemIndex: activeEditor.itemIndex,
+      selectedText,
+      anchorX: rect.left + rect.width / 2,
+      anchorY: rect.bottom,
+    });
+    return true;
   };
 
   const handleCardImagePick = (cardIndex: number, blockIndex?: number) => {
@@ -860,8 +1003,49 @@ export default function App() {
     replaceDoc(nextDoc, true, previousCard);
   };
 
+  const handleResizeImageBlock = (cardIndex: number, blockIndex: number, delta: number) => {
+    if (!activeDoc) return;
+    const nextDoc = cloneDoc(activeDoc);
+    const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
+    const block = nextDoc.cards[cardIndex].blocks?.[blockIndex];
+    if (!block || block.type !== 'image') return;
+    const current = block.imageHeight || getAdaptiveImageBlockHeight({
+      title: nextDoc.cards[cardIndex].title,
+      subtitle: nextDoc.cards[cardIndex].subtitle,
+      hookText: nextDoc.cards[cardIndex].hookText,
+      content: nextDoc.cards[cardIndex].content,
+      listItems: nextDoc.cards[cardIndex].listItems,
+      terminalLines: nextDoc.cards[cardIndex].terminalLines,
+      gridItems: nextDoc.cards[cardIndex].gridItems,
+      blocks: nextDoc.cards[cardIndex].blocks,
+      image: nextDoc.cards[cardIndex].imageData,
+      image2: nextDoc.cards[cardIndex].image2Data,
+      blockImages: [],
+      coverTags: [],
+      fieldFormatting: nextDoc.cards[cardIndex].fieldFormatting,
+    });
+    block.imageHeight = Math.max(160, Math.min(520, current + delta));
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc, true, previousCard);
+  };
+
   const handleRewrite = async (mode: 'selection' | 'full-card') => {
     if (!selectionContext || !activeDoc || !aiCommentDraft.trim()) return;
+    const isSameAsActiveEditor =
+      !!activeEditor &&
+      activeEditor.cardIndex === selectionContext.cardIndex &&
+      activeEditor.field === selectionContext.field &&
+      activeEditor.itemIndex === selectionContext.itemIndex;
+
+    const editingValueAtRequest = editingValueRef.current;
+    const requestCard = (() => {
+      const card = cloneDoc(activeDoc.cards[selectionContext.cardIndex]);
+      if (isSameAsActiveEditor) {
+        writeFieldValue(card, selectionContext.field, selectionContext.itemIndex, editingValueAtRequest);
+      }
+      return card;
+    })();
+
     setRewriting(true);
     try {
       const response = await fetch('/api/rewrite-card', {
@@ -873,7 +1057,7 @@ export default function App() {
           selectedText: selectionContext.selectedText,
           field: selectionContext.field,
           itemIndex: selectionContext.itemIndex,
-          card: activeDoc.cards[selectionContext.cardIndex],
+          card: requestCard,
           config: apiConfig,
         })
       });
@@ -882,30 +1066,35 @@ export default function App() {
         throw new Error(data.error || 'AI 修改失败');
       }
       if (mode === 'selection') {
+        let updatedEditingValue: string | null = null;
         applyCardUpdate(selectionContext.cardIndex, card => {
-          if (selectionContext.field === 'title') card.title = replaceFirst(card.title, selectionContext.selectedText, data.replacementText);
-          if (selectionContext.field === 'subtitle') card.subtitle = replaceFirst(card.subtitle || '', selectionContext.selectedText, data.replacementText);
-          if (selectionContext.field === 'content') card.content = replaceFirst(card.content, selectionContext.selectedText, data.replacementText);
-          if (selectionContext.field === 'listItem' && typeof selectionContext.itemIndex === 'number' && card.listItems) {
-            card.listItems[selectionContext.itemIndex] = replaceFirst(card.listItems[selectionContext.itemIndex], selectionContext.selectedText, data.replacementText);
-          }
-          if (selectionContext.field === 'terminalLine' && typeof selectionContext.itemIndex === 'number' && card.terminalLines) {
-            card.terminalLines[selectionContext.itemIndex].text = replaceFirst(card.terminalLines[selectionContext.itemIndex].text, selectionContext.selectedText, data.replacementText);
-          }
-          if (selectionContext.field === 'gridName' && typeof selectionContext.itemIndex === 'number' && card.gridItems) {
-            card.gridItems[selectionContext.itemIndex].name = replaceFirst(card.gridItems[selectionContext.itemIndex].name, selectionContext.selectedText, data.replacementText);
-          }
-          if (selectionContext.field === 'gridDesc' && typeof selectionContext.itemIndex === 'number' && card.gridItems) {
-            card.gridItems[selectionContext.itemIndex].desc = replaceFirst(card.gridItems[selectionContext.itemIndex].desc, selectionContext.selectedText, data.replacementText);
-          }
+          const source = isSameAsActiveEditor
+            ? editingValueAtRequest
+            : readFieldValue(card, selectionContext.field, selectionContext.itemIndex);
+          const replaced = replaceFirst(source, selectionContext.selectedText, data.replacementText);
+          writeFieldValue(card, selectionContext.field, selectionContext.itemIndex, replaced);
+          updatedEditingValue = replaced;
           return card;
         });
+        if (isSameAsActiveEditor && updatedEditingValue !== null && editingValueRef.current === editingValueAtRequest) {
+          updateEditingValue(updatedEditingValue);
+        }
       } else {
-        applyCardUpdate(selectionContext.cardIndex, card => ({
-          ...card,
+        applyCardUpdate(selectionContext.cardIndex, card => {
+          const base = cloneDoc(card);
+          if (isSameAsActiveEditor) {
+            writeFieldValue(base, selectionContext.field, selectionContext.itemIndex, editingValueAtRequest);
+          }
+          return ({
+          ...base,
           ...data.card,
           id: card.id,
-        }));
+          });
+        });
+        if (isSameAsActiveEditor && data.card && editingValueRef.current === editingValueAtRequest) {
+          const merged = { ...requestCard, ...data.card } as CardData;
+          updateEditingValue(readFieldValue(merged, selectionContext.field, selectionContext.itemIndex));
+        }
       }
       setSelectionContext(null);
       setAiCommentDraft('');
@@ -922,7 +1111,7 @@ export default function App() {
     const previous = cloneDoc(globalPast[globalPast.length - 1]);
     setGlobalPast(prev => prev.slice(0, -1));
     setGlobalFuture(prev => [cloneDoc(activeDoc), ...prev].slice(0, 30));
-    setEditorDoc(previous);
+    syncEditorDocState(previous);
     setResult(denormalizeEditorDoc(previous));
     setImages(previous.images);
     setAuthorInfo(previous.authorInfo);
@@ -935,7 +1124,7 @@ export default function App() {
     const next = cloneDoc(globalFuture[0]);
     setGlobalPast(prev => [...prev, cloneDoc(activeDoc)].slice(-30));
     setGlobalFuture(prev => prev.slice(1));
-    setEditorDoc(next);
+    syncEditorDocState(next);
     setResult(denormalizeEditorDoc(next));
     setImages(next.images);
     setAuthorInfo(next.authorInfo);
@@ -960,7 +1149,7 @@ export default function App() {
         future: [currentCard, ...(prev[card.id].future || [])].slice(0, 20),
       },
     }));
-    setEditorDoc(nextDoc);
+    syncEditorDocState(nextDoc);
     setResult(denormalizeEditorDoc(nextDoc));
   };
 
@@ -981,7 +1170,7 @@ export default function App() {
         future: prev[card.id].future.slice(1),
       },
     }));
-    setEditorDoc(nextDoc);
+    syncEditorDocState(nextDoc);
     setResult(denormalizeEditorDoc(nextDoc));
   };
 
@@ -1027,7 +1216,7 @@ export default function App() {
 
   const handleRestoreVersion = async (entry: VersionEntry) => {
     const restored = cloneDoc(entry.doc);
-    setEditorDoc(restored);
+    syncEditorDocState(restored);
     setResult(denormalizeEditorDoc(restored));
     setImages(restored.images);
     setAuthorInfo(restored.authorInfo);
@@ -1054,18 +1243,18 @@ export default function App() {
 
       <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
         <div className="flex flex-col">
-          <span className="font-script text-3xl tracking-tight drop-shadow-sm leading-none" style={{ color: '#9c5d21' }}>LittleRedNote Image Generator</span>
-          <span className="font-script text-sm tracking-widest mt-0.5 opacity-60 ml-1" style={{ color: '#9c5d21' }}>@Jinger</span>
+          <span className="font-script text-3xl tracking-tight drop-shadow-sm leading-none text-brand">LittleRedNote Image Generator</span>
+          <span className="font-script text-sm tracking-widest mt-0.5 opacity-60 ml-1 text-brand">@Jinger</span>
         </div>
 
         {errorMsg && (
-          <div className="absolute left-1/2 -translate-x-1/2 top-4 bg-red-50 border border-red-200 px-4 py-2 rounded-lg shadow-xl flex items-center gap-3 z-[100] animate-bounce">
-            <div className="w-2 h-2 rounded-full bg-red-500"></div>
+          <div className="absolute left-1/2 -translate-x-1/2 top-4 bg-brand-bg border border-brand-subtle px-4 py-2 rounded-lg shadow-xl flex items-center gap-3 z-[100] animate-bounce">
+            <div className="w-2 h-2 rounded-full bg-brand"></div>
             <div className="flex flex-col">
-              <span className="text-[11px] font-bold text-red-600 leading-none">{errorMsg.title}</span>
-              <span className="text-[10px] text-red-400 leading-tight mt-0.5">{errorMsg.detail}</span>
+              <span className="text-[11px] font-bold text-brand leading-none">{errorMsg.title}</span>
+              <span className="text-[10px] text-brand-light leading-tight mt-0.5">{errorMsg.detail}</span>
             </div>
-            <button onClick={() => setErrorMsg(null)} className="ml-2 text-red-300 hover:text-red-500 text-xs">×</button>
+            <button onClick={() => setErrorMsg(null)} className="ml-2 text-brand-light/70 hover:text-brand text-xs">×</button>
           </div>
         )}
 
@@ -1082,19 +1271,19 @@ export default function App() {
           </button>
           <button
             onClick={() => { loadVersions(); setShowHistory(true); }}
-            className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-black hover:text-white transition-all"
+            className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-brand hover:text-white transition-all"
           >
             历史笔记
           </button>
           {activeDoc && (
-            <button onClick={handleManualSave} className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-black hover:text-white transition-all">
+            <button onClick={handleManualSave} className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-brand hover:text-white transition-all">
               手动保存
             </button>
           )}
           {activeDoc && (
             <button
               onClick={exportImages}
-              className="px-6 py-2 bg-red-500 text-white text-sm font-bold rounded-full hover:bg-red-600 shadow-lg shadow-red-100 transition-all flex items-center gap-2 active:scale-95"
+              className="px-6 py-2 bg-brand text-white text-sm font-bold rounded-full hover:bg-brand-hover shadow-lg shadow-brand/15 transition-all flex items-center gap-2 active:scale-95"
             >
               <Download className="w-4 h-4" />
               <span>一键导出所有卡片 (PNG)</span>
@@ -1105,11 +1294,11 @@ export default function App() {
 
       <main className="flex-1 flex overflow-hidden">
         {showHistory ? (
-          <div className="flex-1 overflow-y-auto p-8 bg-[#f3f4f6]">
+          <div className="flex-1 overflow-y-auto p-8 bg-gray-100">
             <div className="max-w-4xl mx-auto">
               <div className="flex items-center justify-between mb-8">
                 <h1 className="text-2xl font-black tracking-tight">历史笔记 / HISTORY</h1>
-                <button onClick={() => setShowHistory(false)} className="px-6 py-2 rounded-full bg-black text-white text-[11px] font-bold hover:opacity-80 transition-all">← 返回编辑器</button>
+                <button onClick={() => setShowHistory(false)} className="px-6 py-2 rounded-full bg-brand text-white text-[11px] font-bold hover:opacity-80 transition-all">← 返回编辑器</button>
               </div>
               {loadingVersions ? (
                 <div className="text-center py-20 text-gray-400 text-[13px] font-bold">加载中...</div>
@@ -1129,17 +1318,17 @@ export default function App() {
                       const isFirst = idx === 0;
                       return (
                         <div key={entry.key} className="relative pl-12">
-                          <div className={`absolute left-[13px] top-1.5 w-3.5 h-3.5 rounded-full border-2 border-white ${isFirst ? 'bg-black' : 'bg-gray-300'}`}></div>
-                          <div className={`bg-white rounded-2xl border ${isFirst ? 'border-black/20 shadow-lg' : 'border-gray-200'} p-5`}>
+                          <div className={`absolute left-[13px] top-1.5 w-3.5 h-3.5 rounded-full border-2 border-white ${isFirst ? 'bg-brand' : 'bg-gray-300'}`}></div>
+                          <div className={`bg-white rounded-2xl border ${isFirst ? 'border-brand/20 shadow-lg' : 'border-gray-200'} p-5`}>
                             <div className="flex items-start justify-between mb-3">
                               <div>
                                 <span className="text-[11px] font-black text-gray-400">{dateStr}</span>
                                 <span className="text-[11px] font-black text-gray-400 ml-3">{timeStr}</span>
-                                {isFirst && <span className="ml-3 text-[10px] font-black text-black bg-gray-100 px-2 py-0.5 rounded-full">最新</span>}
+                                {isFirst && <span className="ml-3 text-[10px] font-black text-gray-800 bg-gray-100 px-2 py-0.5 rounded-full">最新</span>}
                               </div>
                               <div className="flex gap-2">
-                                <button onClick={() => handleRestoreVersion(entry)} className="px-4 py-1.5 rounded-lg bg-black text-white text-[10px] font-bold hover:opacity-80">恢复此版本</button>
-                                <button onClick={() => handleDeleteVersion(entry.key)} className="px-4 py-1.5 rounded-lg border border-gray-200 text-gray-400 text-[10px] font-bold hover:text-red-500 hover:border-red-200">删除</button>
+                                <button onClick={() => handleRestoreVersion(entry)} className="px-4 py-1.5 rounded-lg bg-brand text-white text-[10px] font-bold hover:opacity-80">恢复此版本</button>
+                                <button onClick={() => handleDeleteVersion(entry.key)} className="px-4 py-1.5 rounded-lg border border-gray-200 text-gray-400 text-[10px] font-bold hover:text-brand hover:border-brand-subtle">删除</button>
                               </div>
                             </div>
                             <div className="flex gap-4">
@@ -1166,8 +1355,7 @@ export default function App() {
           <section className="bg-gray-50 -mx-6 -mt-6 p-6 border-b border-gray-200">
             <button
               onClick={() => setShowSettings(!showSettings)}
-              className="flex items-center justify-between w-full text-[10px] font-black uppercase tracking-widest mb-2 hover:opacity-80 transition-colors border-b pb-1"
-              style={{ color: '#836638', borderColor: '#e0b01a' }}
+              className="flex items-center justify-between w-full text-[10px] font-black uppercase tracking-widest mb-2 hover:opacity-80 transition-colors border-b border-gold pb-1 text-brand"
             >
               <span>个人设置 / PREFERENCES</span>
               <Plus className={`w-3 h-3 transition-transform ${showSettings ? 'rotate-45' : ''}`} />
@@ -1177,11 +1365,11 @@ export default function App() {
                 <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
                   <button
                     onClick={() => setApiConfig({ ...apiConfig, provider: 'gemini' })}
-                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'gemini' ? 'bg-black text-white' : 'text-gray-400'}`}
+                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'gemini' ? 'bg-brand text-white' : 'text-gray-400'}`}
                   >Gemini</button>
                   <button
                     onClick={() => setApiConfig({ ...apiConfig, provider: 'openai' })}
-                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'openai' ? 'bg-black text-white' : 'text-gray-400'}`}
+                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'openai' ? 'bg-brand text-white' : 'text-gray-400'}`}
                   >Custom API</button>
                 </div>
 
@@ -1192,7 +1380,7 @@ export default function App() {
                       placeholder="Gemini API Key (可选)"
                       value={apiConfig.apiKey}
                       onChange={e => setApiConfig({ ...apiConfig, apiKey: e.target.value })}
-                      className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                      className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                     />
                     <p className="text-[9px] text-gray-400 font-medium">留空则默认使用 AI Studio 注入的 Key。</p>
                   </div>
@@ -1206,13 +1394,13 @@ export default function App() {
                         placeholder="API Key"
                         value={apiConfig.apiKey}
                         onChange={e => setApiConfig({ ...apiConfig, apiKey: e.target.value })}
-                        className="flex-1 text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                        className="flex-1 text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                       />
                       <button
                         onClick={fetchModels}
                         disabled={fetchingModels || !apiConfig.apiKey}
                         title="刷新模型列表"
-                        className={`px-3 flex items-center justify-center bg-gray-100 hover:bg-black hover:text-white rounded-lg transition-all disabled:opacity-50 ${fetchingModels ? 'animate-pulse' : ''}`}
+                        className={`px-3 flex items-center justify-center bg-gray-100 hover:bg-brand hover:text-white rounded-lg transition-all disabled:opacity-50 ${fetchingModels ? 'animate-pulse' : ''}`}
                       >
                         <Sparkles className={`w-3 h-3 ${fetchingModels ? 'animate-spin' : ''}`} />
                       </button>
@@ -1222,14 +1410,14 @@ export default function App() {
                       placeholder="Base URL (e.g. https://api.deepseek.com/v1)"
                       value={apiConfig.baseUrl}
                       onChange={e => setApiConfig({ ...apiConfig, baseUrl: e.target.value })}
-                      className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                      className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                     />
 
                     {availableModels.length > 0 ? (
                       <select
                         value={apiConfig.model}
                         onChange={e => setApiConfig({ ...apiConfig, model: e.target.value })}
-                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                       >
                         {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
                       </select>
@@ -1239,7 +1427,7 @@ export default function App() {
                         placeholder="Model (e.g. deepseek-chat)"
                         value={apiConfig.model}
                         onChange={e => setApiConfig({ ...apiConfig, model: e.target.value })}
-                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                        className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                       />
                     )}
                   </div>
@@ -1254,14 +1442,14 @@ export default function App() {
                       placeholder="昵称"
                       value={authorInfo.name}
                       onChange={e => handleAuthorUpdate({ name: e.target.value })}
-                      className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                      className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                     />
                     <input
                       type="text"
                       placeholder="@ID"
                       value={authorInfo.handle}
                       onChange={e => handleAuthorUpdate({ handle: e.target.value })}
-                      className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-red-400 bg-white"
+                      className="text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1275,7 +1463,7 @@ export default function App() {
                         )}
                       </div>
                       <div className="flex-1 space-y-2">
-                        <button onClick={() => avatarInputRef.current?.click()} className="w-full rounded-lg bg-black px-3 py-2 text-[10px] font-bold text-white">
+                        <button onClick={() => avatarInputRef.current?.click()} className="w-full rounded-lg bg-brand px-3 py-2 text-[10px] font-bold text-white">
                           上传头像图片
                         </button>
                         {authorInfo.avatarImage && (
@@ -1308,7 +1496,7 @@ export default function App() {
                     <button
                       key={style.id}
                       onClick={() => setApiConfig({ ...apiConfig, style: style.id })}
-                      className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${apiConfig.style === style.id ? 'bg-black border-black text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400 hover:border-gray-300'}`}
+                      className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${apiConfig.style === style.id ? 'bg-brand border-brand text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400 hover:border-gray-300'}`}
                     >
                       <span className="text-[10px] font-bold">{style.label}</span>
                       <span className="text-[8px] opacity-60 scale-90">{style.sub}</span>
@@ -1322,13 +1510,13 @@ export default function App() {
                   value={ideas}
                   onChange={(e) => setIdeas(e.target.value)}
                   placeholder="输入你的AI见解、工具介绍或Skill介绍..."
-                  className="w-full h-32 text-sm border border-gray-200 rounded-xl p-4 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all resize-none leading-relaxed bg-gray-50/30"
+                  className="w-full h-32 text-sm border border-gray-200 rounded-xl p-4 outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all resize-none leading-relaxed bg-gray-50/30"
                 />
               </div>
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between ml-1">
                   <label className="text-[11px] font-bold text-gray-500 uppercase">参考链接 / LINKS</label>
-                  <button onClick={handleAddLink} className="p-1 bg-gray-100 hover:bg-black hover:text-white rounded-md transition-all">
+                  <button onClick={handleAddLink} className="p-1 bg-gray-100 hover:bg-brand hover:text-white rounded-md transition-all">
                     <Plus className="w-3 h-3" />
                   </button>
                 </div>
@@ -1342,11 +1530,11 @@ export default function App() {
                           value={link}
                           onChange={(e) => handleLinkChange(idx, e.target.value)}
                           placeholder="https://..."
-                          className="w-full text-[12px] border border-gray-200 rounded-xl p-2.5 pl-9 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50/50 transition-all bg-gray-50/30"
+                          className="w-full text-[12px] border border-gray-200 rounded-xl p-2.5 pl-9 outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all bg-gray-50/30"
                         />
                       </div>
                       {links.length > 1 && (
-                        <button onClick={() => handleRemoveLink(idx)} className="p-1.5 text-gray-300 hover:text-red-500 transition-colors">
+                        <button onClick={() => handleRemoveLink(idx)} className="p-1.5 text-gray-300 hover:text-brand transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}
@@ -1364,7 +1552,7 @@ export default function App() {
             </h3>
             <div
               {...getRootProps()}
-              className={`border-2 border-dashed rounded-2xl p-6 transition-all cursor-pointer flex flex-col items-center justify-center gap-2 ${isDragActive ? 'border-red-400 bg-red-50/30' : 'border-gray-200 hover:border-gray-300 bg-gray-50/30 hover:bg-white'}`}
+              className={`border-2 border-dashed rounded-2xl p-6 transition-all cursor-pointer flex flex-col items-center justify-center gap-2 ${isDragActive ? 'border-brand bg-brand-bg/50' : 'border-gray-200 hover:border-gray-300 bg-gray-50/30 hover:bg-white'}`}
             >
               <input {...getInputProps()} />
               <div className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-400">
@@ -1384,7 +1572,7 @@ export default function App() {
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); setImages(prev => prev.filter((_, idx) => idx !== i)); }}
-                      className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-bold"
+                      className="absolute top-0.5 right-0.5 bg-brand text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-[9px] font-bold"
                     >
                       ×
                     </button>
@@ -1398,16 +1586,16 @@ export default function App() {
             onClick={handleGenerate}
             disabled={loading || !ideas}
             className="w-full py-4 rounded-full font-bold flex items-center justify-center gap-2 border-2 transition-all shadow-lg active:scale-95 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-transparent"
-            style={{ backgroundColor: loading || !ideas ? undefined : '#e9d9c3', borderColor: loading || !ideas ? undefined : '#6f4a0a' }}
+            style={{ backgroundColor: loading || !ideas ? undefined : 'var(--color-brand-subtle)', borderColor: loading || !ideas ? undefined : 'var(--color-brand)' }}
           >
             {loading ? (
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             ) : (
               <>
-                <Sparkles className="w-4 h-4" style={{ color: '#7f643e' }} />
+                <Sparkles className="w-4 h-4 text-brand" />
                 <div className="flex gap-1">
-                  <span style={{ color: '#7f643e' }}>生成全套素材</span>
-                  <span style={{ color: '#845a2e' }}>/ GENERATE</span>
+                  <span className="text-brand">生成全套素材</span>
+                  <span className="text-brand">/ GENERATE</span>
                 </div>
               </>
             )}
@@ -1415,18 +1603,18 @@ export default function App() {
 
         </aside>
 
-        <section className="flex-1 p-8 overflow-y-auto relative flex flex-col items-center bg-[#f3f4f6]">
+        <section className="flex-1 p-8 overflow-y-auto relative flex flex-col items-center bg-gray-100">
           <div className="absolute top-4 left-8 flex gap-6 text-[11px] font-black uppercase tracking-widest items-center">
             <button
               onClick={() => setShowCaption(false)}
               className={`pb-1 border-b-2 transition-all ${!showCaption ? '' : 'border-transparent hover:border-gray-300'}`}
-              style={{ color: '#836638', borderColor: !showCaption ? '#e0b01a' : undefined }}
+              style={{ color: 'var(--color-brand)', borderColor: !showCaption ? 'var(--color-gold)' : undefined }}
             >预览模式 / PREVIEW</button>
             {activeDoc && (
               <button
                 onClick={() => setShowCaption(!showCaption)}
                 className={`pb-1 border-b-2 transition-all ${showCaption ? '' : 'border-transparent hover:border-gray-300'}`}
-                style={{ color: '#836638', borderColor: showCaption ? '#e0b01a' : undefined }}
+                style={{ color: 'var(--color-brand)', borderColor: showCaption ? 'var(--color-gold)' : undefined }}
               >
                 正文 / COPY
               </button>
@@ -1441,7 +1629,7 @@ export default function App() {
               <p className="font-black text-xs uppercase tracking-[0.2em] italic">Waiting for Magic...</p>
             </div>
           ) : showCaption ? (
-            <div className="w-full max-w-2xl mx-auto mt-12 pb-24 px-4">
+            <div className="w-full max-w-2xl mx-auto mt-12 pb-8 px-4">
               <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
                 <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">正文编辑 / CAPTION</h3>
                 <textarea
@@ -1461,11 +1649,27 @@ export default function App() {
                         next.updatedAt = Date.now();
                         return next;
                       })}
-                      className="min-w-[72px] rounded-lg bg-gray-50 px-2.5 py-1.5 text-red-500 font-bold text-[11px] outline-none border border-gray-200"
+                      className="min-w-[72px] rounded-lg bg-gray-50 px-2.5 py-1.5 text-brand font-bold text-[11px] outline-none border border-gray-200"
                     />
                   ))}
                 </div>
-                <button onClick={copyCaption} className="mt-4 w-full rounded-xl bg-black px-4 py-2.5 text-[11px] font-bold text-white flex items-center justify-center gap-2">
+                <div className="mt-5 flex gap-2">
+                  <input
+                    value={captionInstruction}
+                    onChange={e => setCaptionInstruction(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRewriteCaption(); } }}
+                    placeholder="告诉 AI 怎么改，比如：语气更活泼、结尾改短一点"
+                    className="flex-1 rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-2.5 text-[13px] outline-none placeholder:text-gray-300"
+                  />
+                  <button
+                    onClick={handleRewriteCaption}
+                    disabled={rewritingCaption || !captionInstruction.trim()}
+                    className="rounded-xl bg-brand px-4 py-2.5 text-[12px] font-bold text-white disabled:opacity-40 shrink-0"
+                  >
+                    {rewritingCaption ? '优化中...' : 'AI 优化'}
+                  </button>
+                </div>
+                <button onClick={copyCaption} className="mt-4 w-full rounded-xl bg-brand px-4 py-2.5 text-[11px] font-bold text-white flex items-center justify-center gap-2">
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
                   </svg>
@@ -1474,7 +1678,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="w-full mt-12 pb-24 flex flex-col items-center">
+            <div className="w-full mt-12 pb-8 flex flex-col items-center">
               <div className="flex flex-col gap-12 items-center">
               {activeDoc.cards.map((card, i) => (
                 <div key={card.id} className="flex flex-col items-center gap-4 group">
@@ -1503,11 +1707,11 @@ export default function App() {
                         authorInfo={activeDoc.authorInfo}
                         generatedAt={activeDoc.generatedAt || Date.now()}
                         className="scale-100"
-                        editable
+                        editable={!isExporting}
                         activeEditor={activeEditor}
                         editingValue={editingValue}
-                        onEditingValueChange={setEditingValue}
-                        onStartEdit={(field, itemIndex) => startEditing(i, field, itemIndex)}
+                        onEditingValueChange={updateEditingValue}
+                        onStartEdit={(field, itemIndex, anchorRect) => startEditing(i, field, itemIndex, anchorRect)}
                         onCommitEdit={commitEditing}
                         onCancelEdit={cancelEditing}
                         onSelectText={(field, selectedText, itemIndex) => handleTextSelection(i, field, selectedText, itemIndex)}
@@ -1515,6 +1719,7 @@ export default function App() {
                         onMoveBlock={(from, to) => handleMoveBlock(i, from, to)}
                         onAddBlock={(type, afterIndex) => handleAddBlock(i, type, afterIndex)}
                         onDeleteBlock={(blockIndex) => handleDeleteBlock(i, blockIndex)}
+                        onResizeImageBlock={(blockIndex, delta) => handleResizeImageBlock(i, blockIndex, delta)}
                       />
                     </div>
                   </div>
@@ -1522,7 +1727,7 @@ export default function App() {
                     <div className="px-3 py-1 bg-white border border-gray-200 text-[10px] font-black text-gray-400 rounded-lg shadow-sm">
                       {card.isCover ? 'COVER PAGE' : `STEP ${i}`}
                     </div>
-                    <div className="px-3 py-1 bg-black text-white text-[10px] font-mono font-bold rounded-lg shadow-lg">
+                    <div className="px-3 py-1 bg-brand text-white text-[10px] font-mono font-bold rounded-lg shadow-lg">
                       {i + 1} / {activeDoc.cards.length}
                     </div>
                     <button onClick={() => handleCardImagePick(i)} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1">
@@ -1547,6 +1752,10 @@ export default function App() {
                       <Redo2 className="w-3 h-3" />
                       <span>单卡恢复</span>
                     </button>
+                    <button onClick={() => exportSingleCard(i)} disabled={isExporting} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1 disabled:opacity-40">
+                      <Download className="w-3 h-3" />
+                      <span>导出此卡</span>
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1554,12 +1763,6 @@ export default function App() {
             </div>
           )}
 
-          <div className="fixed bottom-12 left-1/2 -translate-x-[calc(50%-180px)] xl:-translate-x-[calc(50%-192px)] flex items-center gap-3 px-5 py-2.5 bg-white/90 backdrop-blur-md rounded-full shadow-2xl border border-white/50 z-20 transition-all hover:scale-105">
-            <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: '#876125' }}></div>
-            <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">
-              Live Editing + Auto Save Active
-            </span>
-          </div>
 
           {cropState && (
             <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center">
@@ -1580,76 +1783,99 @@ export default function App() {
                   <input type="range" min={1} max={3} step={0.1} value={cropZoom} onChange={e => setCropZoom(Number(e.target.value))} className="flex-1" />
                 </div>
                 <div className="mt-4 flex gap-3">
-                  <button onClick={handleCropConfirm} className="flex-1 rounded-xl bg-black py-3 text-[12px] font-bold text-white">确认裁剪</button>
+                  <button onClick={handleCropConfirm} className="flex-1 rounded-xl bg-brand py-3 text-[12px] font-bold text-white">确认裁剪</button>
                   <button onClick={handleCropCancel} className="flex-1 rounded-xl border border-gray-200 py-3 text-[12px] font-bold text-gray-500">取消</button>
                 </div>
               </div>
             </div>
           )}
 
-          {selectionContext && (
-            <div className="fixed right-8 bottom-24 w-80 rounded-2xl border border-gray-200 bg-white shadow-2xl p-4 z-30">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[11px] font-black text-gray-700 uppercase tracking-widest flex items-center gap-2">
-                    <MessageSquarePlus className="w-3 h-3" />
-                    文字编辑 / TEXT EDIT
-                  </div>
-                  <p className="mt-2 text-[11px] text-gray-500 leading-relaxed line-clamp-2 truncate">“{selectionContext.selectedText}”</p>
-                </div>
-                <button onClick={() => setSelectionContext(null)} className="text-gray-300 hover:text-gray-500 shrink-0">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
+          {selectionContext && !activeEditor && overlayRoot && createPortal(
+            <div
+              data-editor-toolbar="true"
+              className="fixed bg-white rounded-2xl shadow-2xl border border-gray-200 px-3 py-2 z-[100] flex items-center gap-2"
+              style={{
+                left: Math.min(Math.max(selectionContext.anchorX - 110, 16), window.innerWidth - 236),
+                top: Math.max(selectionContext.anchorY + 10, 16),
+              }}
+            >
               <button
-                onClick={() => {
-                  const { cardIndex, field, itemIndex } = selectionContext;
-                  startEditing(cardIndex, field, itemIndex);
-                }}
-                className="w-full rounded-xl bg-black px-3 py-2.5 text-[11px] font-bold text-white mb-3"
+                onClick={() => startEditing(selectionContext.cardIndex, selectionContext.field, selectionContext.itemIndex)}
+                className="px-3 h-8 rounded-lg bg-brand text-white text-[11px] font-bold"
               >
-                自行编辑
+                编辑
+              </button>
+              <button
+                onClick={() => setShowAiRewritePanel(v => !v)}
+                className="px-3 h-8 rounded-lg border border-gray-200 text-[11px] font-bold text-gray-700 hover:bg-gray-100"
+              >
+                AI优化
               </button>
 
-              <div className="h-px bg-gray-100 my-3" />
-
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">AI 辅助修改</p>
-              <textarea
-                value={aiCommentDraft}
-                onChange={e => setAiCommentDraft(e.target.value)}
-                placeholder="比如：这句话更犀利一点 / 更像小红书语气 / 更具体一点"
-                className="w-full h-20 rounded-xl border border-gray-200 bg-gray-50/60 p-3 text-[12px] outline-none resize-none"
-              />
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => handleRewrite('selection')}
-                  disabled={rewriting || !aiCommentDraft.trim()}
-                  className="rounded-xl bg-black px-3 py-2 text-[11px] font-bold text-white disabled:opacity-40"
-                >
-                  {rewriting ? '处理中...' : '只改选中'}
-                </button>
-                <button
-                  onClick={() => handleRewrite('full-card')}
-                  disabled={rewriting || !aiCommentDraft.trim()}
-                  className="rounded-xl border border-gray-200 px-3 py-2 text-[11px] font-bold text-gray-600 disabled:opacity-40"
-                >
-                  {rewriting ? '处理中...' : '重写整卡'}
-                </button>
-              </div>
-            </div>
+              {showAiRewritePanel && (
+                <div className="absolute top-full right-0 mt-2 w-80 rounded-2xl border border-gray-200 bg-white shadow-2xl p-4 z-[110]">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">AI 辅助修改</p>
+                    <button onClick={() => setShowAiRewritePanel(false)} className="text-gray-300 hover:text-gray-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-500 mb-2 line-clamp-2">“{selectionContext.selectedText}”</p>
+                  <textarea
+                    value={aiCommentDraft}
+                    onChange={e => setAiCommentDraft(e.target.value)}
+                    placeholder="比如：更犀利 / 更小红书 / 更具体"
+                    className="w-full h-20 rounded-xl border border-gray-200 bg-gray-50/60 p-3 text-[12px] outline-none resize-none"
+                  />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleRewrite('selection')}
+                      disabled={rewriting || !aiCommentDraft.trim()}
+                      className="rounded-xl bg-brand px-3 py-2 text-[11px] font-bold text-white disabled:opacity-40"
+                    >
+                      {rewriting ? '处理中...' : '只改选中'}
+                    </button>
+                    <button
+                      onClick={() => handleRewrite('full-card')}
+                      disabled={rewriting || !aiCommentDraft.trim()}
+                      className="rounded-xl border border-gray-200 px-3 py-2 text-[11px] font-bold text-gray-600 disabled:opacity-40"
+                    >
+                      {rewriting ? '处理中...' : '重写整卡'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>,
+            overlayRoot
           )}
 
           {/* 格式工具栏 */}
-          {activeEditor && (
-            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-2xl shadow-2xl border border-gray-200 px-4 py-2.5 z-30 flex items-center gap-1.5">
+          {activeEditor && overlayRoot && createPortal(
+            <div
+              data-editor-toolbar="true"
+              className="fixed bg-white rounded-2xl shadow-2xl border border-gray-200 px-4 py-2.5 z-[100] flex items-center gap-1.5"
+              style={{
+                left: activeEditorRect
+                  ? Math.min(Math.max(activeEditorRect.left + activeEditorRect.width / 2 - 188, 16), window.innerWidth - 392)
+                  : editorAnchorRect
+                  ? Math.min(Math.max(editorAnchorRect.left + editorAnchorRect.width / 2 - 188, 16), window.innerWidth - 392)
+                  : Math.max((window.innerWidth - 376) / 2, 16),
+                top: activeEditorRect
+                  ? Math.min(activeEditorRect.bottom + 10, window.innerHeight - 80)
+                  : editorAnchorRect
+                  ? Math.min(editorAnchorRect.bottom + 10, window.innerHeight - 80)
+                  : window.innerHeight - 84,
+              }}
+            >
               <button
-                onClick={() => { const t = document.activeElement as HTMLTextAreaElement; if (!t) return; const s = t.selectionStart, e = t.selectionEnd, v = editingValue; const sel = v.substring(s, e); const r = sel ? `**${sel}**` : '**'; setEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 2, s + 2 + (sel ? sel.length : 0)); }); }}
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => { const t = getActiveTextarea(); if (!t) return; const s = t.selectionStart || 0, e = t.selectionEnd || 0, v = editingValue; const sel = v.substring(s, e); const r = sel ? `**${sel}**` : '**'; updateEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 2, s + 2 + (sel ? sel.length : 0)); }); }}
                 className="w-8 h-8 rounded-lg hover:bg-gray-100 text-[13px] font-black text-gray-700"
                 title="加粗"
               >B</button>
               <button
-                onClick={() => { const t = document.activeElement as HTMLTextAreaElement; if (!t) return; const s = t.selectionStart, e = t.selectionEnd, v = editingValue; const sel = v.substring(s, e); const r = sel ? `*${sel}*` : '*'; setEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 1, s + 1 + (sel ? sel.length : 0)); }); }}
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => { const t = getActiveTextarea(); if (!t) return; const s = t.selectionStart || 0, e = t.selectionEnd || 0, v = editingValue; const sel = v.substring(s, e); const r = sel ? `*${sel}*` : '*'; updateEditingValue(v.substring(0, s) + r + v.substring(e)); requestAnimationFrame(() => { t.focus(); t.setSelectionRange(s + 1, s + 1 + (sel ? sel.length : 0)); }); }}
                 className="w-8 h-8 rounded-lg hover:bg-gray-100 text-[14px] italic font-serif text-gray-700"
                 title="斜体"
               >I</button>
@@ -1690,20 +1916,73 @@ export default function App() {
 
               <button
                 onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'left'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'left' || !editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'left' || !editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="左对齐"
               >≡</button>
               <button
                 onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'center'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'center' ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'center' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="居中"
               >≡</button>
               <button
                 onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'right'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'right' ? 'bg-black text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'right' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="右对齐"
               >≡</button>
-            </div>
+
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => {
+                  if (!selectionContext) {
+                    const ok = syncSelectionFromActiveTextarea();
+                    if (!ok) return;
+                  }
+                  setShowAiRewritePanel(v => !v);
+                }}
+                disabled={!selectionContext && !activeEditor}
+                className="px-2.5 h-8 rounded-lg border border-gray-200 text-[11px] font-bold text-gray-700 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                title={selectionContext ? 'AI 优化选中文本' : '请先在编辑框里选中文字'}
+              >
+                AI优化
+              </button>
+
+              {showAiRewritePanel && selectionContext && (
+                <div className="absolute top-full right-0 mt-2 w-80 rounded-2xl border border-gray-200 bg-white shadow-2xl p-4 z-[110]">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">AI 辅助修改</p>
+                    <button onClick={() => setShowAiRewritePanel(false)} className="text-gray-300 hover:text-gray-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-500 mb-2 line-clamp-2">“{selectionContext.selectedText}”</p>
+                  <textarea
+                    value={aiCommentDraft}
+                    onChange={e => setAiCommentDraft(e.target.value)}
+                    placeholder="比如：更犀利 / 更小红书 / 更具体"
+                    className="w-full h-20 rounded-xl border border-gray-200 bg-gray-50/60 p-3 text-[12px] outline-none resize-none"
+                  />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleRewrite('selection')}
+                      disabled={rewriting || !aiCommentDraft.trim()}
+                      className="rounded-xl bg-brand px-3 py-2 text-[11px] font-bold text-white disabled:opacity-40"
+                    >
+                      {rewriting ? '处理中...' : '只改选中'}
+                    </button>
+                    <button
+                      onClick={() => handleRewrite('full-card')}
+                      disabled={rewriting || !aiCommentDraft.trim()}
+                      className="rounded-xl border border-gray-200 px-3 py-2 text-[11px] font-bold text-gray-600 disabled:opacity-40"
+                    >
+                      {rewriting ? '处理中...' : '重写整卡'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>,
+            overlayRoot
           )}
 
         </section>
@@ -1720,9 +1999,13 @@ export default function App() {
           <span>FORMAT: 3:4 VERTICAL HD</span>
         </div>
         <div className="flex gap-6 items-center">
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: '#f4bf0b' }}></span>
+            <span>LIVE EDITING + AUTO SAVE ACTIVE</span>
+          </div>
           <span>VIBE CODING ENGINE ACTIVE</span>
           <div className="flex items-center gap-1.5">
-            <span style={{ borderColor: '#99c88c', color: '#628d60' }} className="text-red-500 animate-pulse text-lg">●</span>
+            <span style={{ borderColor: '#99c88c', color: '#628d60' }} className="text-brand animate-pulse text-lg">●</span>
             <span className="mt-0.5">RECORDING UI CHANGES</span>
           </div>
         </div>

@@ -206,6 +206,21 @@ async function startServer() {
     }
   });
 
+  app.post("/api/rewrite-caption", async (req, res) => {
+    try {
+      const { caption, instruction, config } = req.body;
+      if (!caption || !instruction) {
+        return res.status(400).json({ error: "缺少正文或优化指令" });
+      }
+      const prompt = `你是小红书文案编辑。根据用户的要求优化下面这段正文。只返回优化后的正文纯文本，不要解释，不要加引号，不要加标题。\n\n原正文：\n${caption}\n\n用户要求：${instruction}`;
+      const text = await generateText(config, prompt);
+      return res.json({ caption: text.trim() });
+    } catch (error: any) {
+      console.error("Rewrite Caption Error:", error);
+      return res.status(500).json({ error: error.message || "AI 优化失败" });
+    }
+  });
+
   app.post("/api/rewrite-card", async (req, res) => {
     try {
       const { mode, instruction, selectedText, field, card, config } = req.body;

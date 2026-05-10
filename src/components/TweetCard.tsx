@@ -14,6 +14,7 @@ export type ContentBlock = {
   text?: string;
   imageIndex?: number;
   imageData?: string;
+  imageHeight?: number;
 };
 
 type CardProps = {
@@ -50,7 +51,7 @@ type CardProps = {
   } | null;
   editingValue?: string;
   onEditingValueChange?: (value: string) => void;
-  onStartEdit?: (field: CardEditorField, itemIndex?: number) => void;
+  onStartEdit?: (field: CardEditorField, itemIndex?: number, anchorRect?: DOMRect) => void;
   onCommitEdit?: () => void;
   onCancelEdit?: () => void;
   onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
@@ -58,6 +59,7 @@ type CardProps = {
   onMoveBlock?: (fromIndex: number, toIndex: number) => void;
   onAddBlock?: (type: 'text' | 'image', afterIndex: number) => void;
   onDeleteBlock?: (index: number) => void;
+  onResizeImageBlock?: (index: number, delta: number) => void;
 };
 
 type RenderCtx = {
@@ -81,7 +83,7 @@ type EditHelpers = {
   activeEditor?: CardProps['activeEditor'];
   editingValue?: string;
   onEditingValueChange?: (value: string) => void;
-  onStartEdit?: (field: CardEditorField, itemIndex?: number) => void;
+  onStartEdit?: (field: CardEditorField, itemIndex?: number, anchorRect?: DOMRect) => void;
   onCommitEdit?: () => void;
   onCancelEdit?: () => void;
   onSelectText?: (field: CardEditorField, selectedText: string, itemIndex?: number) => void;
@@ -89,6 +91,7 @@ type EditHelpers = {
   onMoveBlock?: (fromIndex: number, toIndex: number) => void;
   onAddBlock?: (type: 'text' | 'image', afterIndex: number) => void;
   onDeleteBlock?: (index: number) => void;
+  onResizeImageBlock?: (index: number, delta: number) => void;
   fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
 };
 
@@ -159,9 +162,33 @@ function renderRichText(text: string) {
   });
 }
 
-function handleSelection(field: CardEditorField, onSelectText?: EditHelpers['onSelectText'], itemIndex?: number) {
+const selectionHandledElements = new WeakSet<HTMLElement>();
+
+function hasTextSelectionWithin(container: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return false;
+  const selected = selection.toString();
+  if (!selected.trim()) return false;
+  const anchor = selection.anchorNode;
+  const focus = selection.focusNode;
+  if (!anchor || !focus) return false;
+  return container.contains(anchor) && container.contains(focus);
+}
+
+function handleSelectionOnMouseUp(
+  element: HTMLElement,
+  field: CardEditorField,
+  onSelectText?: EditHelpers['onSelectText'],
+  itemIndex?: number
+) {
+  if (!hasTextSelectionWithin(element)) return;
   const selected = window.getSelection()?.toString() || '';
-  if (selected.trim()) onSelectText?.(field, selected, itemIndex);
+  if (!selected.trim()) return;
+  selectionHandledElements.add(element);
+  window.setTimeout(() => {
+    selectionHandledElements.delete(element);
+  }, 0);
+  onSelectText?.(field, selected, itemIndex);
 }
 
 const FONT_SIZE_MAP: Record<string, string> = {
@@ -170,6 +197,35 @@ const FONT_SIZE_MAP: Record<string, string> = {
   l: '44px',
   xl: '58px',
 };
+
+export function getAdaptiveImageBlockHeight(ctx: RenderCtx) {
+  const blocks = ctx.blocks;
+  if (!blocks || blocks.length === 0) return 320;
+
+  const textBlocks = blocks.filter(block => block.type === 'text');
+  const imageBlocks = blocks.filter(block => block.type === 'image');
+  const blockTextLength = textBlocks.reduce((sum, block) => sum + (block.text?.length || 0), 0);
+  const chromeTextLength =
+    (ctx.title?.length || 0) +
+    (ctx.subtitle?.length || 0) +
+    (ctx.hookText?.length || 0) +
+    (ctx.content?.length || 0) +
+    (ctx.listItems?.join('').length || 0) +
+    ((ctx.terminalLines || []).reduce((sum, line) => sum + line.text.length, 0)) +
+    ((ctx.gridItems || []).reduce((sum, item) => sum + item.name.length + item.desc.length, 0));
+  const totalTextLength = blockTextLength + chromeTextLength;
+
+  let height = 380;
+  if (totalTextLength > 420) height -= 130;
+  else if (totalTextLength > 280) height -= 90;
+  else if (totalTextLength > 160) height -= 50;
+  else if (totalTextLength < 90) height += 40;
+
+  if (textBlocks.length >= 3) height -= 30;
+  if (imageBlocks.length >= 2) height -= 70 * (imageBlocks.length - 1);
+
+  return Math.max(180, Math.min(420, height));
+}
 
 function renderEditableText(field: CardEditorField, value: string, className: string, style: React.CSSProperties, helpers: EditHelpers, itemIndex?: number) {
   const fmt = helpers.fieldFormatting?.[field];
@@ -181,30 +237,40 @@ function renderEditableText(field: CardEditorField, value: string, className: st
   };
   const isEditing = !!helpers.activeEditor && helpers.activeEditor.field === field && helpers.activeEditor.itemIndex === itemIndex;
   if (!helpers.editable) {
-    return <div className={className} style={mergedStyle}>{renderRichText(value)}</div>;
+    return <div className={cn(className, 'whitespace-pre-wrap')} style={mergedStyle}>{renderRichText(value)}</div>;
   }
   if (isEditing) {
     return (
       <textarea
         autoFocus
+        data-card-editor-active="true"
         value={helpers.editingValue || ''}
         onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-        onBlur={helpers.onCommitEdit}
+        onBlur={e => {
+          const next = e.relatedTarget as HTMLElement | null;
+          if (next?.closest('[data-editor-toolbar="true"]')) return;
+          helpers.onCommitEdit?.();
+        }}
         onKeyDown={e => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
           if (e.key === 'Escape') helpers.onCancelEdit?.();
         }}
-        className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none')}
+        className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none whitespace-pre-wrap')}
         style={mergedStyle}
       />
     );
   }
   return (
     <div
-      className={cn(className, 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
+      className={cn(className, 'cursor-text whitespace-pre-wrap hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
       style={mergedStyle}
-      onClick={() => helpers.onStartEdit?.(field, itemIndex)}
-      onMouseUp={() => handleSelection(field, helpers.onSelectText, itemIndex)}
+      onClick={e => {
+        const el = e.currentTarget as HTMLDivElement;
+        if (selectionHandledElements.has(el)) return;
+        if (hasTextSelectionWithin(el)) return;
+        helpers.onStartEdit?.(field, itemIndex, el.getBoundingClientRect());
+      }}
+      onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, field, helpers.onSelectText, itemIndex)}
     >
       {renderRichText(value || '点击编辑')}
     </div>
@@ -274,7 +340,7 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
         <svg className="absolute w-12 h-12 z-3" style={{ top: '8%', right: '12%' }} viewBox="0 0 24 24" fill="#fbbf24">
           <path d="M12 2l2.4 7.2L22 9.5l-5.8 5.1 1.7 7.4L12 17.8 6.1 22l1.7-7.4L2 9.5l7.6-.3L12 2z" />
         </svg>
-        <div className="absolute z-3 bg-[#0f1419] text-white font-bold px-5 py-2.5 rounded-xl text-xl whitespace-nowrap tracking-wide" style={{ bottom: '12%', left: '8%' }}>
+        <div className="absolute z-4 bg-[#0f1419] text-white font-bold px-5 py-2.5 rounded-xl text-xl whitespace-nowrap tracking-wide" style={{ bottom: '2%', left: '8%', transform: 'rotate(8deg)' }}>
           AI VIBE CODING
         </div>
         <div className="absolute z-3 w-4 h-4 rounded-full bg-[#f38ba8]" style={{ top: '18%', left: '62%' }} />
@@ -304,22 +370,32 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
 
 function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
   const blocks = ctx.blocks;
+  const imageBlockHeight = getAdaptiveImageBlockHeight(ctx);
   return (
-    <div className="flex flex-col gap-5 flex-1 overflow-hidden min-h-0">
+    <div className={cn('flex flex-col gap-5 flex-1 min-h-0', helpers.editable ? 'overflow-visible' : 'overflow-hidden')}>
       {blocks && blocks.map((block, i) => {
         const isEditingThis = helpers.activeEditor?.field === 'blockText' && helpers.activeEditor?.itemIndex === i;
         if (block.type === 'image') {
           const imgSrc = ctx.blockImages?.[i];
+          const blockHeight = block.imageHeight || imageBlockHeight;
           return (
-            <div key={i} className="relative group/block">
+            <div key={i} className="relative group/block shrink-0">
               {imgSrc ? (
-                <div className="rounded-3xl overflow-hidden shadow-lg border-4 border-white">
-                  <img src={imgSrc} className="w-full object-cover max-h-[500px]" alt="" />
+                <div
+                  className="rounded-3xl overflow-hidden shadow-lg border-4 border-white bg-[#f8fafc] flex items-center justify-center"
+                  style={{ height: `${blockHeight}px` }}
+                >
+                  <img
+                    src={imgSrc}
+                    className="w-full h-full object-contain"
+                    alt=""
+                  />
                 </div>
               ) : helpers.editable ? (
                 <button
                   onClick={() => helpers.onPickImage?.(i)}
-                  className="w-full rounded-3xl border-2 border-dashed border-gray-300 h-[240px] flex items-center justify-center text-gray-400"
+                  className="w-full rounded-3xl border-2 border-dashed border-gray-300 flex items-center justify-center text-gray-400"
+                  style={{ height: `${blockHeight}px` }}
                 >
                   <div className="flex flex-col items-center gap-3">
                     <ImagePlus className="w-12 h-12" />
@@ -329,6 +405,8 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
               ) : null}
               {helpers.editable && (
                 <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover/block:opacity-100 transition-opacity">
+                  <button onClick={() => helpers.onResizeImageBlock?.(i, -40)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">-</button>
+                  <button onClick={() => helpers.onResizeImageBlock?.(i, 40)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">+</button>
                   {i > 0 && <button onClick={() => helpers.onMoveBlock?.(i, i - 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↑</button>}
                   {i < blocks.length - 1 && <button onClick={() => helpers.onMoveBlock?.(i, i + 1)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-gray-500 hover:text-gray-800 text-[20px] font-bold">↓</button>}
                   <button onClick={() => helpers.onDeleteBlock?.(i)} className="w-10 h-10 rounded-lg bg-white/90 shadow flex items-center justify-center text-red-400 hover:text-red-600">
@@ -344,9 +422,14 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
             {isEditingThis ? (
               <textarea
                 autoFocus
+                data-card-editor-active="true"
                 value={helpers.editingValue || ''}
                 onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-                onBlur={helpers.onCommitEdit}
+                onBlur={e => {
+                  const next = e.relatedTarget as HTMLElement | null;
+                  if (next?.closest('[data-editor-toolbar="true"]')) return;
+                  helpers.onCommitEdit?.();
+                }}
                 onKeyDown={e => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
                   if (e.key === 'Escape') helpers.onCancelEdit?.();
@@ -358,8 +441,13 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
               <div
                 className={cn('text-[36px] text-[#0f1419]', helpers.editable && 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
                 style={{ lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }}
-                onClick={() => helpers.onStartEdit?.('blockText', i)}
-                onMouseUp={() => handleSelection('blockText', helpers.onSelectText, i)}
+                onClick={e => {
+                  const el = e.currentTarget as HTMLDivElement;
+                  if (selectionHandledElements.has(el)) return;
+                  if (hasTextSelectionWithin(el)) return;
+                  helpers.onStartEdit?.('blockText', i, el.getBoundingClientRect());
+                }}
+                onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, 'blockText', helpers.onSelectText, i)}
               >
                 {renderRichText(block.text || '点击编辑')}
               </div>
@@ -403,7 +491,7 @@ function renderText(ctx: RenderCtx, helpers: EditHelpers) {
   return (
     <>
       {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
-      {renderEditableText('content', ctx.content, 'flex-1 min-h-0 overflow-hidden text-[36px] text-[#0f1419]', { lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }, helpers)}
+      {renderEditableText('content', ctx.content, cn('flex-1 min-h-0 text-[36px] text-[#0f1419]', helpers.editable ? 'overflow-visible' : 'overflow-hidden'), { lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }, helpers)}
       {ctx.image ? (
         <div className="mt-6 mb-4 rounded-3xl overflow-hidden shadow-lg border-4 border-white">
           <img src={ctx.image} className="w-full object-cover max-h-[550px]" alt="" />
@@ -420,7 +508,7 @@ function renderList(ctx: RenderCtx, helpers: EditHelpers) {
     <>
       {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
       {renderEditableText('content', ctx.content, 'text-[36px] text-[#0f1419] mb-6 shrink-0', { lineHeight: 1.65 }, helpers)}
-      <div className="flex flex-col gap-5 flex-1 overflow-hidden">
+      <div className={cn('flex flex-col gap-5', helpers.editable ? 'overflow-visible' : 'overflow-hidden')}>
         {items.map((item, i) => (
           <div key={i} className="flex gap-4 items-start">
             <div className="w-9 h-9 rounded-full bg-[#0f1419] flex items-center justify-center text-white font-bold shrink-0 mt-1" style={{ fontSize: '18px' }}>
@@ -465,13 +553,28 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
               default: colorClass = 'text-[#6c7086]';
             }
             return (
-              <div key={i} className={colorClass} onClick={() => helpers.onStartEdit?.('terminalLine', i)} onMouseUp={() => handleSelection('terminalLine', helpers.onSelectText, i)}>
+              <div
+                key={i}
+                className={colorClass}
+                onClick={e => {
+                  const el = e.currentTarget as HTMLDivElement;
+                  if (selectionHandledElements.has(el)) return;
+                  if (hasTextSelectionWithin(el)) return;
+                  helpers.onStartEdit?.('terminalLine', i, el.getBoundingClientRect());
+                }}
+                onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, 'terminalLine', helpers.onSelectText, i)}
+              >
                 {helpers.activeEditor?.field === 'terminalLine' && helpers.activeEditor?.itemIndex === i ? (
                   <textarea
                     autoFocus
+                    data-card-editor-active="true"
                     value={helpers.editingValue || ''}
                     onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-                    onBlur={helpers.onCommitEdit}
+                    onBlur={e => {
+                      const next = e.relatedTarget as HTMLElement | null;
+                      if (next?.closest('[data-editor-toolbar="true"]')) return;
+                      helpers.onCommitEdit?.();
+                    }}
                     onKeyDown={e => {
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
                       if (e.key === 'Escape') helpers.onCancelEdit?.();
@@ -502,7 +605,7 @@ function renderGrid(ctx: RenderCtx, helpers: EditHelpers) {
     <>
       {renderEditableText('title', ctx.title, 'text-[58px] font-black text-[#0f1419] leading-tight mb-6 shrink-0', { letterSpacing: '-0.02em', lineHeight: 1.25 }, helpers)}
       {ctx.content && renderEditableText('content', ctx.content, 'text-[36px] text-[#0f1419] mb-6 shrink-0', { lineHeight: 1.65 }, helpers)}
-      <div className="grid grid-cols-2 gap-5 flex-1 overflow-hidden content-start">
+      <div className={cn('grid grid-cols-2 gap-5 content-start', helpers.editable ? 'overflow-visible' : 'overflow-hidden')}>
         {items.map((item, i) => (
           <div key={i} className="rounded-[20px] p-7 border" style={{ background: '#f7f9f9', borderColor: '#eff3f4' }}>
             {renderEditableText('gridName', item.name, 'font-mono text-[22px] text-[#1d9bf0] font-semibold mb-2.5', {}, helpers, i)}
@@ -565,6 +668,7 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
   onMoveBlock,
   onAddBlock,
   onDeleteBlock,
+  onResizeImageBlock,
 }, ref) => {
   const ctx: RenderCtx = { title, content, image, image2, subtitle, hookText, listItems, terminalLines, gridItems, blocks, blockImages, coverTags, fieldFormatting };
   const helpers: EditHelpers = {
@@ -580,6 +684,7 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
     onMoveBlock,
     onAddBlock,
     onDeleteBlock,
+    onResizeImageBlock,
     fieldFormatting,
   };
   const dateStr = generatedAt ? formatBeijingTime(generatedAt) : formatBeijingTime(Date.now());
@@ -596,9 +701,9 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
             </div>
           )}
         </div>
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[28px] font-bold text-[#0f1419] leading-tight">{authorInfo.name}</span>
+            <span className="text-[28px] font-bold text-[#0f1419] leading-tight truncate">{authorInfo.name}</span>
             <svg viewBox="0 0 22 22" className="w-7 h-7 shrink-0">
               <path d="M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568s-.969.855-1.24 1.44c-.608-.223-1.267-.272-1.902-.14-.635.13-1.22.436-1.69.882-.445.47-.749 1.055-.878 1.69-.13.633-.08 1.29.144 1.896-.587.274-1.087.705-1.443 1.245-.356.54-.555 1.17-.574 1.817.02.647.218 1.276.574 1.817.356.54.856.972 1.443 1.245-.224.606-.274 1.263-.144 1.896.13.636.433 1.221.878 1.69.47.446 1.055.752 1.69.883.635.13 1.294.083 1.902-.143.271.586.702 1.084 1.24 1.438.54.354 1.167.551 1.813.569.646-.018 1.273-.215 1.813-.569.54-.354.97-.853 1.24-1.438.608.226 1.267.276 1.902.143.635-.131 1.22-.437 1.69-.883.445-.469.749-1.054.878-1.69.131-.633.08-1.29-.14-1.896.587-.273 1.084-.705 1.438-1.245.355-.54.553-1.17.57-1.817z" fill="#1d9bf0"/>
               <path d="M9.585 14.929l-3.28-3.28 1.168-1.168 2.112 2.112 5.06-5.06 1.168 1.168-6.228 6.228z" fill="#fff"/>
@@ -609,7 +714,7 @@ export const TweetCard = forwardRef<HTMLDivElement, CardProps>(({
         <MoreHorizontal className="w-10 h-10 text-[#536471] ml-auto mt-1 shrink-0" />
       </div>
 
-      <div className="flex-1 px-20 pt-8 flex flex-col overflow-hidden">
+      <div className={cn('flex-1 px-20 pt-8 flex flex-col', editable ? 'overflow-y-auto' : 'overflow-hidden')}>
         {isCover || layout === 'cover'
           ? renderCover(ctx, helpers)
           : layout === 'list'

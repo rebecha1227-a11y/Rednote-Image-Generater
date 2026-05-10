@@ -1,6 +1,6 @@
 # 交接文档 — 小红书 AI 内容生成器
 
-更新时间：2026-05-06（第 2 次更新）
+更新时间：2026-05-07（第 3 次更新）
 
 ---
 
@@ -15,6 +15,8 @@
 | 5 | **图片裁剪集成** | 安装 `react-easy-crop`，侧栏图片 hover 出现"封面左图"/"封面右图"快捷按钮 + 小 × 删除；卡片已有图片出现"裁剪""裁剪右图"按钮 |
 | 6 | **封面快捷设置** | 侧栏图片 hover 可直接设为封面左/右图 |
 | 7 | **`formatBeijingTime` 优化** | 从 +8h UTC hack 改为 `Intl.DateTimeFormat` + `timeZone: 'Asia/Shanghai'` |
+| 8 | **底部状态栏整合** | 删除浮动的 "Live Editing + Auto Save Active" 标签，整合进 footer 状态栏 |
+| 9 | **去掉多余滚动空白** | 预览区和正文编辑区底部留白从 `pb-24` → `pb-8` |
 
 ---
 
@@ -63,6 +65,19 @@
 `images[]` 数组和卡片内联 `imageData` 如果积累大量 Base64 图片，IndexedDB 保存/恢复可能有短暂卡顿。
 - 当前场景（小红书卡片，几张图）完全没问题
 - 如果未来单文档图片超过 20 张，要考虑独立图片存储
+
+---
+
+## 待办任务（排查后更新）
+
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| 1 | **主题色统一**（暖棕色系） | ✅ 已完成 | `index.css` 的 `@theme` 块已定义 brand/gold 色系，Tailwind v4 自动生成 utility class |
+| 2 | **选中文字 AI 改写** | ✅ 已做 | `handleRewrite` + `/api/rewrite-card` + 浮动面板 UI（只改选中/重写整卡） |
+| 3 | **AI prompt 生成 hookText+blocks** | ✅ 已做 | prompt 已包含 hookText 和 blocks 字段指令 |
+| 4 | **list/terminal/grid 底部图片区** | ✅ 已做 | 三种布局都已加 `ctx.image` 图片 + `renderBlockSequence` |
+| 5 | **格式工具栏** | ✅ 已做 | 加粗/斜体、字号选择、颜色面板、对齐按钮 |
+| 6 | **拖拽调整图片位置** | ⏳ 要做 | 目前只有 ↑↓ 按钮，没有拖拽。方案待确认 |
 
 ---
 
