@@ -1223,6 +1223,44 @@ export default function App() {
     setShowHistory(false);
   };
 
+  const handleExportHistory = () => {
+    const data = JSON.stringify(versions.map(v => ({ key: v.key, doc: v.doc, savedAt: v.savedAt })), null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.download = `rednote-history-${new Date().toISOString().slice(0, 10)}.json`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const handleImportHistory = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    try {
+      const text = await file.text();
+      const entries: VersionEntry[] = JSON.parse(text);
+      if (!Array.isArray(entries)) throw new Error('格式不对');
+      const db = await openEditorDb();
+      const tx = db.transaction('versions', 'readwrite');
+      const store = tx.objectStore('versions');
+      const existingKeys = await new Promise<IDBValidKey[]>((res, rej) => {
+        const r = store.getAllKeys(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      });
+      const existingSet = new Set(existingKeys.map(String));
+      for (const entry of entries) {
+        if (!entry.doc || !entry.key) continue;
+        const key = existingSet.has(entry.key) ? 'v-' + entry.savedAt + '-' + Math.random().toString(36).slice(2, 6) : entry.key;
+        store.put(entry.doc, key);
+        existingSet.add(key);
+      }
+      await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+      await loadVersions();
+    } catch (err: any) {
+      setErrorMsg({ title: '导入失败', detail: err.message || '文件格式不正确' });
+    }
+  };
+
   const handleDeleteVersion = async (key: string) => {
     try {
       const db = await openEditorDb();
@@ -1298,7 +1336,16 @@ export default function App() {
             <div className="max-w-4xl mx-auto">
               <div className="flex items-center justify-between mb-8">
                 <h1 className="text-2xl font-black tracking-tight">历史笔记 / HISTORY</h1>
-                <button onClick={() => setShowHistory(false)} className="px-6 py-2 rounded-full bg-brand text-white text-[11px] font-bold hover:opacity-80 transition-all">← 返回编辑器</button>
+                <div className="flex items-center gap-2">
+                  {versions.length > 0 && (
+                    <button onClick={handleExportHistory} className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-gray-50 transition-all">导出全部</button>
+                  )}
+                  <label className="px-4 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold text-gray-600 hover:bg-gray-50 transition-all cursor-pointer">
+                    导入历史
+                    <input type="file" accept=".json" className="hidden" onChange={handleImportHistory} />
+                  </label>
+                  <button onClick={() => setShowHistory(false)} className="px-6 py-2 rounded-full bg-brand text-white text-[11px] font-bold hover:opacity-80 transition-all">← 返回编辑器</button>
+                </div>
               </div>
               {loadingVersions ? (
                 <div className="text-center py-20 text-gray-400 text-[13px] font-bold">加载中...</div>
