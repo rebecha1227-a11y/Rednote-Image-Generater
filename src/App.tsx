@@ -273,7 +273,7 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<{ title: string; detail: string } | null>(null);
   const [authorInfo, setAuthorInfo] = useState<AuthorInfo>(savedAuthor || DEFAULT_AUTHOR);
   const [apiConfig, setApiConfig] = useState(savedConfig || {
-    provider: 'gemini',
+    provider: 'openai',
     apiKey: '',
     baseUrl: '',
     model: '',
@@ -1409,31 +1409,6 @@ export default function App() {
             </button>
             {showSettings && (
               <div className="space-y-4 pt-2">
-                <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
-                  <button
-                    onClick={() => setApiConfig({ ...apiConfig, provider: 'gemini' })}
-                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'gemini' ? 'bg-brand text-white' : 'text-gray-400'}`}
-                  >Gemini</button>
-                  <button
-                    onClick={() => setApiConfig({ ...apiConfig, provider: 'openai' })}
-                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${apiConfig.provider === 'openai' ? 'bg-brand text-white' : 'text-gray-400'}`}
-                  >Custom API</button>
-                </div>
-
-                {apiConfig.provider === 'gemini' && (
-                  <div className="space-y-2">
-                    <input
-                      type="password"
-                      placeholder="Gemini API Key (可选)"
-                      value={apiConfig.apiKey}
-                      onChange={e => setApiConfig({ ...apiConfig, apiKey: e.target.value })}
-                      className="w-full text-[11px] p-2 border border-gray-200 rounded-lg outline-none focus:border-brand bg-white"
-                    />
-                    <p className="text-[9px] text-gray-400 font-medium">留空则默认使用 AI Studio 注入的 Key。</p>
-                  </div>
-                )}
-
-                {apiConfig.provider === 'openai' && (
                   <div className="space-y-2">
                     <div className="flex gap-2">
                       <input
@@ -1478,7 +1453,6 @@ export default function App() {
                       />
                     )}
                   </div>
-                )}
 
                 <div className="h-px bg-gray-200 my-4" />
                 <div className="space-y-4">
@@ -1631,7 +1605,7 @@ export default function App() {
 
           <button
             onClick={handleGenerate}
-            disabled={loading || !ideas}
+            disabled={loading || !ideas || !apiConfig.apiKey}
             className="w-full py-4 rounded-full font-bold flex items-center justify-center gap-2 border-2 transition-all shadow-lg active:scale-95 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-transparent"
             style={{ backgroundColor: loading || !ideas ? undefined : 'var(--color-brand-subtle)', borderColor: loading || !ideas ? undefined : 'var(--color-brand)' }}
           >

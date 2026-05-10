@@ -2,7 +2,6 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import axios from "axios";
 import * as cheerio from "cheerio";
@@ -39,68 +38,40 @@ function sanitizeBaseUrl(url?: string): string | undefined {
 }
 
 async function generateText(config: any, finalPrompt: string, images?: string[]) {
+  if (!config.apiKey) throw new Error("请提供 API Key");
   let text = "";
-  const isCustomOpenAI = config?.provider === "openai";
-  const isCustomGemini = config?.provider === "gemini" && config?.apiKey;
-
-  if (isCustomOpenAI) {
-    const sanitizedUrl = sanitizeBaseUrl(config.baseUrl);
-    const openai = new OpenAI({
-      apiKey: config.apiKey || process.env.OPENAI_API_KEY,
-      baseURL: sanitizedUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-      defaultHeaders: {
-        'Authorization': `Bearer ${config.apiKey || process.env.OPENAI_API_KEY}`
-      }
-    });
-
-    const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
-    const hasImages = images && Array.isArray(images) && images.length > 0;
-    const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3') || modelName.includes('vl') || modelName.includes('visual') || modelName.includes('gemini') || modelName.includes('llava');
-
-    const content: any = (!hasImages || !isVisionModel) ? finalPrompt : [
-      { type: "text", text: finalPrompt },
-      ...images.map((img: string) => ({
-        type: "image_url",
-        image_url: { url: img },
-      })),
-    ];
-
-    const response = await openai.chat.completions.create({
-      model: modelName,
-      messages: [{ role: "user", content }],
-      response_format: undefined,
-    });
-    const choice = response?.choices?.[0];
-    if (!choice) {
-      console.error("Unexpected API response:", JSON.stringify(response));
-      throw new Error("API 返回格式异常，没有 choices 字段。请确认该接口兼容 OpenAI 格式，或检查模型名称是否填写正确。");
+  const sanitizedUrl = sanitizeBaseUrl(config.baseUrl);
+  const openai = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: sanitizedUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    defaultHeaders: {
+      'Authorization': `Bearer ${config.apiKey}`
     }
-    text = choice.message?.content || "";
-  } else {
-    const apiKey = isCustomGemini ? config.apiKey : process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-      throw new Error("Gemini API Key 未正确配置。如果你使用的是系统默认 Key，请确保已在 AI Studio Secrets 面板设置 GEMINI_API_KEY 且它是有效的 API Key。");
-    }
+  });
 
-    const ai = new GoogleGenAI({ apiKey });
-    const modelName = isCustomGemini ? (config.model || "gemini-2.0-flash") : "gemini-2.0-flash";
-    const contents: any[] = [{ role: "user", parts: [{ text: finalPrompt }] }];
+  const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
+  const hasImages = images && Array.isArray(images) && images.length > 0;
+  const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3') || modelName.includes('vl') || modelName.includes('visual') || modelName.includes('gemini') || modelName.includes('llava');
 
-    if (images && Array.isArray(images)) {
-      images.forEach((img) => {
-        const [mimePart, dataPart] = img.split(";base64,");
-        contents[0].parts.push({
-          inlineData: {
-            data: dataPart,
-            mimeType: mimePart.split(":")[1] || "image/png",
-          },
-        });
-      });
-    }
+  const content: any = (!hasImages || !isVisionModel) ? finalPrompt : [
+    { type: "text", text: finalPrompt },
+    ...images.map((img: string) => ({
+      type: "image_url",
+      image_url: { url: img },
+    })),
+  ];
 
-    const result = await ai.models.generateContent({ model: modelName, contents });
-    text = result.text || "";
+  const response = await openai.chat.completions.create({
+    model: modelName,
+    messages: [{ role: "user", content }],
+    response_format: undefined,
+  });
+  const choice = response?.choices?.[0];
+  if (!choice) {
+    console.error("Unexpected API response:", JSON.stringify(response));
+    throw new Error("API 返回格式异常，没有 choices 字段。请确认该接口兼容 OpenAI 格式，或检查模型名称是否填写正确。");
   }
+  text = choice.message?.content || "";
 
   return text.replace(/```json/g, "").replace(/```/g, "").trim();
 }
@@ -191,7 +162,7 @@ async function startServer() {
 
       if (error.message?.includes("RESOURCE_EXHAUSTED") || error.status === 429) {
         errorMessage = "API 额度已耗尽";
-        details = "Gemini 免费额度已用完，请稍后再试，或者在设置中填入你自己的 API Key 以获得独立配额。";
+        details = "API 额度已用完，请稍后再试，或更换你自己的 API Key。";
       } else if (error.status === 401) {
         errorMessage = "API Key 错误";
         details = "提供的 API Key 无效或已过期，请检查设置。";
