@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# 私人文件
+.claude/
+.playwright-mcp/
+.bytro
+CLAUDE.md
+HANDOVER.md
+rednote_view.png
+xiaohongshu.html
+头像.png
+*.png
+!public/**/*.png
