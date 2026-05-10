@@ -2,6 +2,8 @@
 
 **Twitter 风小红书笔记图片生成器** — 输入灵感想法，AI 自动生成一套带结构化卡片的小红书笔记素材，支持一键导出 PNG。
 
+🔗 **在线体验：[rednote-image-generater-production.up.railway.app](https://rednote-image-generater-production.up.railway.app/)**
+
 ---
 
 ## ✨ 功能
