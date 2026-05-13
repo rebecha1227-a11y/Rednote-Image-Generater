@@ -259,9 +259,21 @@ function readFileAsDataUrl(file: File) {
   });
 }
 
+function readStoredJson<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    console.warn(`Failed to parse localStorage key: ${key}`, error);
+    localStorage.removeItem(key);
+    return null;
+  }
+}
+
 export default function App() {
-  const savedAuthor = JSON.parse(localStorage.getItem('authorInfo') || 'null');
-  const savedConfig = JSON.parse(localStorage.getItem('apiConfig') || 'null');
+  const savedAuthor = readStoredJson<AuthorInfo>('authorInfo');
+  const savedConfig = readStoredJson<{ provider?: string; apiKey?: string; baseUrl?: string; model?: string; style?: string }>('apiConfig');
 
   const [ideas, setIdeas] = useState('');
   const [links, setLinks] = useState<string[]>(['']);
@@ -271,6 +283,7 @@ export default function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<{ title: string; detail: string } | null>(null);
+  const [successMsg, setSuccessMsg] = useState<{ title: string; detail: string } | null>(null);
   const [authorInfo, setAuthorInfo] = useState<AuthorInfo>(savedAuthor || DEFAULT_AUTHOR);
   const [apiConfig, setApiConfig] = useState(savedConfig || {
     provider: 'openai',
@@ -365,12 +378,7 @@ export default function App() {
   }, []);
 
   React.useEffect(() => {
-    if (apiConfig.provider === 'openai' && apiConfig.apiKey) {
-      const timer = setTimeout(() => {
-        fetchModels();
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
+    setAvailableModels([]);
   }, [apiConfig.apiKey, apiConfig.baseUrl]);
 
   React.useEffect(() => {
@@ -446,8 +454,8 @@ export default function App() {
     setActiveEditorRect(t?.getBoundingClientRect() || null);
   }, [activeEditor, editingValue]);
 
-  const fetchModels = async () => {
-    if (!apiConfig.apiKey || apiConfig.provider !== 'openai') return;
+  const fetchModels = React.useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (fetchingModels || !apiConfig.apiKey || apiConfig.provider !== 'openai') return;
     setFetchingModels(true);
     try {
       const response = await fetch('/api/models', {
@@ -458,6 +466,10 @@ export default function App() {
           baseUrl: apiConfig.baseUrl
         })
       });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
       const data = await response.json();
       if (data.models) {
         setAvailableModels(data.models);
@@ -466,17 +478,29 @@ export default function App() {
           setApiConfig(prev => ({ ...prev, model: defaultModel }));
         }
       } else {
-        setErrorMsg({ title: '模型获取失败', detail: data.error || '请检查 API Key 和 Base URL 是否正确' });
-        setTimeout(() => setErrorMsg(null), 5000);
+        if (!silent) {
+          setErrorMsg({ title: '模型获取失败', detail: data.error || '请检查 API Key 和 Base URL 是否正确' });
+          setTimeout(() => setErrorMsg(null), 5000);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch models:', err);
-      setErrorMsg({ title: '网络错误', detail: '无法连接到服务器，请稍后再试' });
-      setTimeout(() => setErrorMsg(null), 3000);
+      if (!silent) {
+        setErrorMsg({ title: '网络错误', detail: '无法连接到服务器，请稍后再试' });
+        setTimeout(() => setErrorMsg(null), 3000);
+      }
     } finally {
       setFetchingModels(false);
     }
-  };
+  }, [apiConfig.apiKey, apiConfig.baseUrl, apiConfig.model, apiConfig.provider, fetchingModels]);
+
+  React.useEffect(() => {
+    if (!showSettings || !apiConfig.apiKey.trim() || fetchingModels) return;
+    const timer = window.setTimeout(() => {
+      fetchModels({ silent: true });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [showSettings, apiConfig.apiKey, apiConfig.baseUrl, fetchingModels, fetchModels]);
 
   const pushGlobalSnapshot = (doc: EditorDoc) => {
     setGlobalPast(prev => [...prev, cloneDoc(doc)].slice(-30));
@@ -755,8 +779,15 @@ export default function App() {
   const copyCaption = () => {
     if (!activeDoc) return;
     const text = `${activeDoc.caption}\n\n${activeDoc.tags.map(t => `#${t}`).join(' ')}`;
-    navigator.clipboard.writeText(text);
-    alert('已复制到剪贴板');
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setSuccessMsg({ title: '复制成功', detail: '正文和标签已复制到剪贴板' });
+        setTimeout(() => setSuccessMsg(null), 2500);
+      })
+      .catch(() => {
+        setErrorMsg({ title: '复制失败', detail: '浏览器未允许剪贴板访问，请手动复制' });
+        setTimeout(() => setErrorMsg(null), 3000);
+      });
   };
 
   const handleRewriteCaption = async () => {
@@ -1296,6 +1327,17 @@ export default function App() {
           </div>
         )}
 
+        {successMsg && (
+          <div className="absolute left-1/2 -translate-x-1/2 top-4 bg-green-50 border border-green-200 px-4 py-2 rounded-lg shadow-xl flex items-center gap-3 z-[101]">
+            <div className="w-2 h-2 rounded-full bg-green-500"></div>
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold text-green-700 leading-none">{successMsg.title}</span>
+              <span className="text-[10px] text-green-600 leading-tight mt-0.5">{successMsg.detail}</span>
+            </div>
+            <button onClick={() => setSuccessMsg(null)} className="ml-2 text-green-500/70 hover:text-green-700 text-xs">×</button>
+          </div>
+        )}
+
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[10px] font-bold text-gray-500 shadow-sm">
             <span className={`h-2 w-2 rounded-full ${saveState === 'saving' ? 'bg-amber-400' : saveState === 'saved' ? 'bg-green-500' : 'bg-gray-300'}`}></span>
@@ -1427,6 +1469,7 @@ export default function App() {
                         <Sparkles className={`w-3 h-3 ${fetchingModels ? 'animate-spin' : ''}`} />
                       </button>
                     </div>
+                    <p className="text-[10px] text-gray-400 ml-1">填好 API Key 和 Base URL 后会自动尝试拉取模型；没成功也可以点右侧按钮手动刷新。</p>
                     <input
                       type="text"
                       placeholder="Base URL (e.g. https://api.deepseek.com/v1)"

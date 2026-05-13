@@ -1,5 +1,9 @@
 import "dotenv/config";
 import express from "express";
+import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
 import path from "path";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
@@ -10,10 +14,110 @@ import { createServer as createViteServer } from "vite";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function isPrivateIpv4(ip: string) {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return true;
+  if (parts[0] === 10) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 169 && parts[1] === 254) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 0) return true;
+  return false;
+}
+
+function isPrivateIpv6(ip: string) {
+  const normalized = ip.toLowerCase();
+  if (normalized.startsWith("::ffff:")) {
+    const mappedIpv4 = normalized.slice(7);
+    return net.isIPv4(mappedIpv4) ? isPrivateIpv4(mappedIpv4) : true;
+  }
+  return (
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:") ||
+    normalized === "::"
+  );
+}
+
+function isBlockedHostname(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".local") ||
+    normalized.endsWith(".internal") ||
+    normalized.endsWith(".localhost")
+  );
+}
+
+async function assertPublicHttpUrl(rawUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("链接格式无效");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("只支持 http 或 https 链接");
+  }
+
+  if (!parsed.hostname || isBlockedHostname(parsed.hostname)) {
+    throw new Error("不允许访问本地或内网链接");
+  }
+
+  const literalType = net.isIP(parsed.hostname);
+  if (literalType === 4 && isPrivateIpv4(parsed.hostname)) {
+    throw new Error("不允许访问 IPv4 内网地址");
+  }
+  if (literalType === 6 && isPrivateIpv6(parsed.hostname)) {
+    throw new Error("不允许访问 IPv6 内网地址");
+  }
+
+  const records = await dns.lookup(parsed.hostname, { all: true });
+  if (records.length === 0) {
+    throw new Error("链接域名解析失败");
+  }
+
+  const safeRecord = records.find(record =>
+    !(
+      (record.family === 4 && isPrivateIpv4(record.address)) ||
+      (record.family === 6 && isPrivateIpv6(record.address))
+    )
+  );
+
+  for (const record of records) {
+    if (
+      (record.family === 4 && isPrivateIpv4(record.address)) ||
+      (record.family === 6 && isPrivateIpv6(record.address))
+    ) {
+      throw new Error("不允许访问解析到内网的链接");
+    }
+  }
+
+  if (!safeRecord) {
+    throw new Error("链接域名解析失败");
+  }
+
+  return {
+    parsed,
+    address: safeRecord.address,
+    family: safeRecord.family,
+  };
+}
+
 async function fetchUrlContent(url: string): Promise<string> {
   try {
-    const response = await axios.get(url, {
+    const { parsed, address, family } = await assertPublicHttpUrl(url);
+    const lookup: NonNullable<http.AgentOptions["lookup"]> = (_hostname, _options, callback) => {
+      callback(null, address, family);
+    };
+    const response = await axios.get(parsed.toString(), {
       timeout: 8000,
+      maxRedirects: 0,
+      httpAgent: new http.Agent({ lookup }),
+      httpsAgent: new https.Agent({ lookup }),
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
       }
@@ -125,7 +229,7 @@ async function startServer() {
       let scrapedContext = "";
       if (links && Array.isArray(links) && links.length > 0) {
         const contents = await Promise.all(links.map(link => {
-          if (!link || !link.startsWith('http')) return Promise.resolve("");
+          if (!link || typeof link !== "string") return Promise.resolve("");
           return fetchUrlContent(link);
         }));
         scrapedContext = contents.filter(c => c).map((c, i) => `参考来源 ${i + 1} (${links[i]}):\n${c}`).join("\n\n");
@@ -240,4 +344,3 @@ async function startServer() {
 }
 
 startServer();
-
