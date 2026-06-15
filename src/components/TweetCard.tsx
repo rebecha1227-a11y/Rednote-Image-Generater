@@ -287,12 +287,28 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
       <div className="relative w-full mt-7" style={{ height: '580px' }}>
         {image ? (
           <>
-            <img
-              src={image}
-              className="absolute rounded-[20px] object-cover shadow-lg border border-gray-200"
-              style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
-              alt=""
-            />
+            {helpers.editable && helpers.onPickImage ? (
+              <button
+                type="button"
+                aria-label="更换封面左图"
+                onClick={() => helpers.onPickImage?.()}
+                className="absolute rounded-[20px] shadow-lg border border-gray-200 overflow-hidden cursor-pointer"
+                style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
+              >
+                <img
+                  src={image}
+                  className="w-full h-full object-cover"
+                  alt=""
+                />
+              </button>
+            ) : (
+              <img
+                src={image}
+                className="absolute rounded-[20px] object-cover shadow-lg border border-gray-200"
+                style={{ width: '55%', height: '90%', top: '5%', left: 0, zIndex: 2, transform: 'rotate(-2deg)' }}
+                alt=""
+              />
+            )}
             <button
               onClick={() => helpers.onPickImage?.(-1)}
               className="absolute rounded-[20px] border border-gray-200 shadow-lg overflow-hidden cursor-pointer flex items-center justify-center"
@@ -301,8 +317,8 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
               {image2 ? (
                 <img src={image2} className="w-full h-full object-cover" alt="" />
               ) : (
-                <div className="flex flex-col items-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)' }}>
-                  <ImagePlus className="w-16 h-16 mt-20 text-gray-300" />
+                <div className="flex flex-col items-center justify-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef2f2 0%, #fde2c8 100%)' }}>
+                  <ImagePlus className="w-16 h-16 text-gray-300" />
                   <span className="text-xl font-bold text-gray-400">点击上传</span>
                 </div>
               )}
@@ -328,7 +344,7 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
               {image2 ? (
                 <img src={image2} className="w-full h-full object-cover" alt="" />
               ) : (
-                <div className="flex flex-col items-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)' }}>
+                <div className="flex flex-col items-center justify-center gap-2" style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #fef9c3 0%, #fde68a 100%)' }}>
                   <ImagePlus className="w-16 h-16 text-yellow-400" />
                   <span className="text-xl font-bold text-yellow-600">点击上传图片</span>
                 </div>
@@ -382,7 +398,7 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
             <div key={i} className="relative group/block shrink-0">
               {imgSrc ? (
                 <div
-                  className="rounded-3xl overflow-hidden shadow-lg border-4 border-white bg-[#f8fafc] flex items-center justify-center"
+                  className="rounded-3xl overflow-hidden shadow-lg border-4 border-white bg-white flex items-center justify-center"
                   style={{ height: `${blockHeight}px` }}
                 >
                   <img

@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDropzone } from 'react-dropzone';
-import { toPng } from 'html-to-image';
+import { toBlob } from 'html-to-image';
 import {
   Upload,
   Sparkles,
@@ -318,13 +318,16 @@ export default function App() {
   const [activeEditorRect, setActiveEditorRect] = useState<DOMRect | null>(null);
   const [editorAnchorRect, setEditorAnchorRect] = useState<DOMRect | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [renderExportCards, setRenderExportCards] = useState(false);
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const exportCardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const cardImageInputRef = useRef<HTMLInputElement | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCardImageRef = useRef<{ cardIndex: number; blockIndex?: number } | null>(null);
   const editingValueRef = useRef(editingValue);
   const editorDocRef = useRef<EditorDoc | null>(null);
+  const lastAutoFetchedModelsKeyRef = useRef('');
 
   const activeDoc = editorDoc;
   const getActiveTextarea = () => document.querySelector('textarea[data-card-editor-active="true"]') as HTMLTextAreaElement | null;
@@ -337,6 +340,10 @@ export default function App() {
   React.useEffect(() => {
     localStorage.setItem('apiConfig', JSON.stringify(apiConfig));
   }, [apiConfig]);
+
+  React.useEffect(() => {
+    exportCardRefs.current = [];
+  }, [activeDoc?.cards.length]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -379,6 +386,7 @@ export default function App() {
 
   React.useEffect(() => {
     setAvailableModels([]);
+    lastAutoFetchedModelsKeyRef.current = '';
   }, [apiConfig.apiKey, apiConfig.baseUrl]);
 
   React.useEffect(() => {
@@ -455,7 +463,7 @@ export default function App() {
   }, [activeEditor, editingValue]);
 
   const fetchModels = React.useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (fetchingModels || !apiConfig.apiKey || apiConfig.provider !== 'openai') return;
+    if (fetchingModels || !apiConfig.apiKey || apiConfig.provider !== 'openai') return false;
     setFetchingModels(true);
     try {
       const response = await fetch('/api/models', {
@@ -477,11 +485,13 @@ export default function App() {
           const defaultModel = data.models.find((m: string) => m.toLowerCase().includes('chat')) || data.models[0];
           setApiConfig(prev => ({ ...prev, model: defaultModel }));
         }
+        return true;
       } else {
         if (!silent) {
           setErrorMsg({ title: '模型获取失败', detail: data.error || '请检查 API Key 和 Base URL 是否正确' });
           setTimeout(() => setErrorMsg(null), 5000);
         }
+        return false;
       }
     } catch (err) {
       console.error('Failed to fetch models:', err);
@@ -489,18 +499,23 @@ export default function App() {
         setErrorMsg({ title: '网络错误', detail: '无法连接到服务器，请稍后再试' });
         setTimeout(() => setErrorMsg(null), 3000);
       }
+      return false;
     } finally {
       setFetchingModels(false);
     }
   }, [apiConfig.apiKey, apiConfig.baseUrl, apiConfig.model, apiConfig.provider, fetchingModels]);
 
   React.useEffect(() => {
-    if (!showSettings || !apiConfig.apiKey.trim() || fetchingModels) return;
+    if (!showSettings || apiConfig.provider !== 'openai' || !apiConfig.apiKey.trim() || fetchingModels) return;
+    const configKey = `${apiConfig.provider}::${apiConfig.apiKey.trim()}::${apiConfig.baseUrl.trim()}`;
+    if (lastAutoFetchedModelsKeyRef.current === configKey) return;
     const timer = window.setTimeout(() => {
-      fetchModels({ silent: true });
+      fetchModels({ silent: true }).then(success => {
+        if (success) lastAutoFetchedModelsKeyRef.current = configKey;
+      });
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [showSettings, apiConfig.apiKey, apiConfig.baseUrl, fetchingModels, fetchModels]);
+  }, [showSettings, apiConfig.provider, apiConfig.apiKey, apiConfig.baseUrl, fetchingModels, fetchModels]);
 
   const pushGlobalSnapshot = (doc: EditorDoc) => {
     setGlobalPast(prev => [...prev, cloneDoc(doc)].slice(-30));
@@ -734,26 +749,51 @@ export default function App() {
     }
   };
 
+  const waitForExportAssets = async (el: HTMLElement) => {
+    if ('fonts' in document) {
+      await document.fonts.ready.catch(() => undefined);
+    }
+    const imagesToLoad = Array.from(el.querySelectorAll('img')).filter(img => !img.complete);
+    await Promise.all(imagesToLoad.map(img => new Promise<void>(resolve => {
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+    })));
+  };
+
+  const downloadCardImage = async (el: HTMLElement, filename: string) => {
+    await waitForExportAssets(el);
+    const blob = await toBlob(el, {
+      pixelRatio: 1,
+      width: 1242,
+      height: 1660,
+    });
+    if (!blob) throw new Error('导出图片失败，请重试');
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const prepareExportCards = async () => {
+    setRenderExportCards(true);
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  };
+
   const exportImages = async () => {
     if (!activeDoc) return;
     setIsExporting(true);
     try {
-      await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+      await prepareExportCards();
       for (let i = 0; i < activeDoc.cards.length; i++) {
-        const el = cardRefs.current[i];
+        const el = exportCardRefs.current[i] || cardRefs.current[i];
         if (el) {
-          const dataUrl = await toPng(el, {
-            pixelRatio: 1,
-            width: 1242,
-            height: 1660,
-          });
-          const link = document.createElement('a');
-          link.download = `card-${i + 1}.png`;
-          link.href = dataUrl;
-          link.click();
+          await downloadCardImage(el, `card-${i + 1}.png`);
         }
       }
     } finally {
+      setRenderExportCards(false);
       setIsExporting(false);
     }
   };
@@ -762,16 +802,13 @@ export default function App() {
     if (!activeDoc) return;
     setIsExporting(true);
     try {
-      await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
-      const el = cardRefs.current[cardIndex];
+      await prepareExportCards();
+      const el = exportCardRefs.current[cardIndex] || cardRefs.current[cardIndex];
       if (el) {
-        const dataUrl = await toPng(el, { pixelRatio: 1, width: 1242, height: 1660 });
-        const link = document.createElement('a');
-        link.download = `card-${cardIndex + 1}.png`;
-        link.href = dataUrl;
-        link.click();
+        await downloadCardImage(el, `card-${cardIndex + 1}.png`);
       }
     } finally {
+      setRenderExportCards(false);
       setIsExporting(false);
     }
   };
@@ -874,7 +911,10 @@ export default function App() {
 
   const handleCardImagePick = (cardIndex: number, blockIndex?: number) => {
     pendingCardImageRef.current = { cardIndex, blockIndex };
-    cardImageInputRef.current?.click();
+    if (cardImageInputRef.current) {
+      cardImageInputRef.current.value = '';
+      cardImageInputRef.current.click();
+    }
   };
 
   const handleCardImageChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1019,7 +1059,10 @@ export default function App() {
     if (type === 'image') {
       // 立即触发图片选择
       pendingCardImageRef.current = { cardIndex, blockIndex: afterIndex + 1 };
-      cardImageInputRef.current?.click();
+      if (cardImageInputRef.current) {
+        cardImageInputRef.current.value = '';
+        cardImageInputRef.current.click();
+      }
     }
   };
 
@@ -1307,8 +1350,40 @@ export default function App() {
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden select-none">
-      <input ref={cardImageInputRef} type="file" accept="image/*" className="hidden" onChange={handleCardImageChosen} />
-      <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChosen} />
+      <input ref={cardImageInputRef} type="file" accept="image/*" className="fixed left-0 top-0 h-px w-px opacity-0" tabIndex={-1} aria-hidden="true" onChange={handleCardImageChosen} />
+      <input ref={avatarInputRef} type="file" accept="image/*" className="fixed left-0 top-0 h-px w-px opacity-0" tabIndex={-1} aria-hidden="true" onChange={handleAvatarChosen} />
+
+      {activeDoc && renderExportCards && (
+        <div className="fixed left-[-10000px] top-0 pointer-events-none" aria-hidden="true">
+          {activeDoc.cards.map((card, i) => (
+            <TweetCard
+              key={`export-${card.id}`}
+              ref={el => (exportCardRefs.current[i] = el)}
+              cardIndex={i}
+              index={i + 1}
+              total={activeDoc.cards.length}
+              title={card.title}
+              subtitle={card.subtitle}
+              hookText={card.hookText}
+              content={card.content}
+              isCover={card.isCover}
+              layout={card.layout}
+              listItems={card.listItems}
+              terminalLines={card.terminalLines}
+              gridItems={card.gridItems}
+              blocks={card.blocks}
+              blockImages={card.blocks?.map(b => b.type === 'image' ? (b.imageData || (b.imageIndex !== undefined ? activeDoc.images[b.imageIndex] : undefined)) : undefined)}
+              coverTags={card.isCover ? activeDoc.tags : undefined}
+              fieldFormatting={card.fieldFormatting}
+              image={card.imageData || (card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined)}
+              image2={card.image2Data || (card.imageIndex2 !== undefined ? activeDoc.images[card.imageIndex2] : undefined)}
+              authorInfo={activeDoc.authorInfo}
+              generatedAt={activeDoc.generatedAt || Date.now()}
+              editable={false}
+            />
+          ))}
+        </div>
+      )}
 
       <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
         <div className="flex flex-col">

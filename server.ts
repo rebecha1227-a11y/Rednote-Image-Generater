@@ -141,18 +141,107 @@ function sanitizeBaseUrl(url?: string): string | undefined {
   return sanitized.replace(/\/$/, "");
 }
 
+async function assertPublicApiBase(baseUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("API Base URL 格式无效");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("API Base URL 必须使用 HTTPS");
+  }
+  if (!parsed.hostname || isBlockedHostname(parsed.hostname)) {
+    throw new Error("不允许使用本地或内网地址作为 API 地址");
+  }
+  const literalType = net.isIP(parsed.hostname);
+  if (literalType === 4 && isPrivateIpv4(parsed.hostname)) {
+    throw new Error("不允许使用内网 IP 作为 API 地址");
+  }
+  if (literalType === 6 && isPrivateIpv6(parsed.hostname)) {
+    throw new Error("不允许使用内网 IPv6 作为 API 地址");
+  }
+  if (literalType === 0) {
+    let records: { address: string; family: number }[];
+    try {
+      records = await dns.lookup(parsed.hostname, { all: true }) as any;
+    } catch {
+      throw new Error("API 域名解析失败，请检查地址是否正确");
+    }
+    for (const record of records) {
+      if (
+        (record.family === 4 && isPrivateIpv4(record.address)) ||
+        (record.family === 6 && isPrivateIpv6(record.address))
+      ) {
+        throw new Error("API 域名解析到内网地址，不允许访问");
+      }
+    }
+  }
+}
+
+function isApiConnectionInterrupted(error: any) {
+  const msg = error.message || "";
+  const code = error.code || "";
+  const causeCode = error.cause?.code || "";
+  const deepCauseCode = error.cause?.cause?.code || "";
+  return (
+    msg === "terminated" ||
+    msg === "aborted" ||
+    msg === "Connection error." ||
+    msg.includes("fetch failed") ||
+    msg.includes("socket hang up") ||
+    code === "ECONNRESET" ||
+    code === "UND_ERR_SOCKET" ||
+    causeCode === "ECONNRESET" ||
+    causeCode === "UND_ERR_SOCKET" ||
+    deepCauseCode === "ECONNRESET" ||
+    deepCauseCode === "UND_ERR_SOCKET" ||
+    error.name === "AbortError"
+  );
+}
+
+function logApiError(label: string, error: any) {
+  console.error(label, {
+    message: error?.message,
+    status: error?.status || error?.response?.status,
+    code: error?.code || error?.cause?.code || error?.cause?.cause?.code,
+    type: error?.type,
+    url: error?.config?.url,
+  });
+}
+
+
+async function callChatAPI(baseURL: string, apiKey: string, payload: any) {
+  await assertPublicApiBase(baseURL);
+  const url = `${baseURL.replace(/\/$/, "")}/chat/completions`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const err: any = new Error(body || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function generateText(config: any, finalPrompt: string, images?: string[]) {
   if (!config.apiKey) throw new Error("请提供 API Key");
-  let text = "";
-  const sanitizedUrl = sanitizeBaseUrl(config.baseUrl);
-  const openai = new OpenAI({
-    apiKey: config.apiKey,
-    baseURL: sanitizedUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-    defaultHeaders: {
-      'Authorization': `Bearer ${config.apiKey}`
-    }
-  });
 
+  const baseURL = sanitizeBaseUrl(config.baseUrl) || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
   const modelName = config.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
   const hasImages = images && Array.isArray(images) && images.length > 0;
   const isVisionModel = modelName.includes('vision') || modelName.includes('gpt-4o') || modelName.includes('claude-3') || modelName.includes('vl') || modelName.includes('visual') || modelName.includes('gemini') || modelName.includes('llava');
@@ -165,19 +254,32 @@ async function generateText(config: any, finalPrompt: string, images?: string[])
     })),
   ];
 
-  const response = await openai.chat.completions.create({
+  const payload: any = {
     model: modelName,
     messages: [{ role: "user", content }],
-    response_format: undefined,
-  });
-  const choice = response?.choices?.[0];
-  if (!choice) {
-    console.error("Unexpected API response:", JSON.stringify(response));
-    throw new Error("API 返回格式异常，没有 choices 字段。请确认该接口兼容 OpenAI 格式，或检查模型名称是否填写正确。");
-  }
-  text = choice.message?.content || "";
+  };
 
-  return text.replace(/```json/g, "").replace(/```/g, "").trim();
+  const maxRetries = 3;
+  let lastError: any;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`API call attempt ${attempt}/${maxRetries} → ${baseURL}`);
+      const response = await callChatAPI(baseURL, config.apiKey, payload);
+      const choice = response?.choices?.[0];
+      if (!choice) {
+        console.error("Unexpected API response:", JSON.stringify(response));
+        throw new Error("API 返回格式异常，没有 choices 字段。请确认该接口兼容 OpenAI 格式，或检查模型名称是否填写正确。");
+      }
+      const text = choice.message?.content || "";
+      return text.replace(/```json/g, "").replace(/```/g, "").trim();
+    } catch (error: any) {
+      lastError = error;
+      if (!isApiConnectionInterrupted(error) && error.code !== "ECONNABORTED" && error.code !== "ERR_NETWORK") throw error;
+      console.warn(`Attempt ${attempt} failed (${error.message}), ${attempt < maxRetries ? 'retrying in 2s...' : 'giving up'}`);
+      if (attempt < maxRetries) await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+  throw lastError;
 }
 
 async function startServer() {
@@ -191,15 +293,13 @@ async function startServer() {
       const { apiKey, baseUrl } = req.body;
       if (!apiKey) return res.status(400).json({ error: "API Key is required" });
 
-      const sanitizedUrl = sanitizeBaseUrl(baseUrl);
+      const sanitizedUrl = sanitizeBaseUrl(baseUrl) || process.env.OPENAI_BASE_URL;
+      if (sanitizedUrl) await assertPublicApiBase(sanitizedUrl);
       console.log(`Fetching models from: ${sanitizedUrl || 'OpenAI Default'}`);
 
       const openai = new OpenAI({
         apiKey: apiKey,
         baseURL: sanitizedUrl || "https://api.openai.com/v1",
-        defaultHeaders: {
-          'Authorization': `Bearer ${apiKey}`
-        }
       });
 
       const list = await openai.models.list();
@@ -259,18 +359,23 @@ async function startServer() {
         });
       }
     } catch (error: any) {
-      console.error("API Error:", error);
+      logApiError("API Error:", error);
 
       let errorMessage = "生成失败";
       let details = error.message;
 
-      if (error.message?.includes("RESOURCE_EXHAUSTED") || error.status === 429) {
+      const httpStatus = error.status || error.response?.status;
+
+      if (error.message?.includes("RESOURCE_EXHAUSTED") || httpStatus === 429) {
         errorMessage = "API 额度已耗尽";
         details = "API 额度已用完，请稍后再试，或更换你自己的 API Key。";
-      } else if (error.status === 401) {
+      } else if (httpStatus === 401) {
         errorMessage = "API Key 错误";
         details = "提供的 API Key 无效或已过期，请检查设置。";
-      } else if (error.message?.includes("image_url") || error.status === 400) {
+      } else if (isApiConnectionInterrupted(error)) {
+        errorMessage = "API 连接中断";
+        details = "接口服务提前断开了连接。请稍后重试；如果一直失败，请检查 Base URL 是否正确（通常需要以 /v1 结尾），或更换 API 服务商。";
+      } else if (error.message?.includes("image_url") || httpStatus === 400) {
         if (error.message?.includes("expected text")) {
           errorMessage = "模型不支持图片";
           details = "当前选择的模型不支持图片输入，请尝试移除图片或更换为 vision 系列模型。";
