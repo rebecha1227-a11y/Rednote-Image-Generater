@@ -194,6 +194,17 @@ function handleSelectionOnMouseUp(
   onSelectText?.(field, selected, itemIndex);
 }
 
+function handleEditorBlur(e: React.FocusEvent, onCommit?: () => void) {
+  const next = e.relatedTarget as HTMLElement | null;
+  if (next?.closest('[data-editor-toolbar="true"]')) return;
+  window.setTimeout(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest('[data-editor-toolbar="true"]')) return;
+    if (active?.closest('[data-card-editor-active="true"]')) return;
+    onCommit?.();
+  }, 0);
+}
+
 export function getAdaptiveImageBlockHeight(ctx: RenderCtx) {
   const blocks = ctx.blocks;
   if (!blocks || blocks.length === 0) return 320;
@@ -238,11 +249,7 @@ function renderEditableText(field: CardEditorField, value: string, className: st
         data-card-editor-active="true"
         value={helpers.editingValue || ''}
         onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-        onBlur={e => {
-          const next = e.relatedTarget as HTMLElement | null;
-          if (next?.closest('[data-editor-toolbar="true"]')) return;
-          helpers.onCommitEdit?.();
-        }}
+        onBlur={e => handleEditorBlur(e, helpers.onCommitEdit)}
         onKeyDown={e => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
           if (e.key === 'Escape') helpers.onCancelEdit?.();
@@ -561,11 +568,7 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
                     data-card-editor-active="true"
                     value={helpers.editingValue || ''}
                     onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-                    onBlur={e => {
-                      const next = e.relatedTarget as HTMLElement | null;
-                      if (next?.closest('[data-editor-toolbar="true"]')) return;
-                      helpers.onCommitEdit?.();
-                    }}
+                    onBlur={e => handleEditorBlur(e, helpers.onCommitEdit)}
                     onKeyDown={e => {
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
                       if (e.key === 'Escape') helpers.onCancelEdit?.();

@@ -2137,12 +2137,12 @@ export default function App() {
 
               <select
                 value={activeFieldFormatting?.fontSize || ''}
-                onMouseDown={e => e.preventDefault()}
                 onChange={e => {
                   const v = e.target.value as FieldFormatting['fontSize'] | '';
                   applyActiveFormatting({ fontSize: v || undefined });
+                  requestAnimationFrame(() => getActiveTextarea()?.focus());
                 }}
-                className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 outline-none bg-white"
+                className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 outline-none bg-white cursor-pointer"
                 title="字号"
               >
                 <option value="">默认</option>
