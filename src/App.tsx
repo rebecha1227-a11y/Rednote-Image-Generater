@@ -18,12 +18,15 @@ import {
 } from 'lucide-react';
 import Cropper, { type Area } from 'react-easy-crop';
 import { TweetCard, getAdaptiveImageBlockHeight, type CardEditorField, type ContentBlock } from './components/TweetCard';
+import { ExportPreviewModal } from './components/ExportPreviewModal';
 import {
   type FieldFormatting,
   resolveFieldFormatting,
   patchFieldFormatting,
   DEFAULT_TEXT_COLOR,
 } from './lib/fieldFormatting';
+import { buildCardRenderProps } from './lib/buildCardRenderProps';
+import { CARD_HEIGHT, CARD_WIDTH, EDITOR_PREVIEW_SCALE } from './lib/cardExport';
 
 type CardLayout = 'cover' | 'text' | 'list' | 'terminal' | 'grid';
 
@@ -320,6 +323,7 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [renderExportCards, setRenderExportCards] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
+  const [exportPreview, setExportPreview] = useState<{ mode: 'all' } | { mode: 'single'; cardIndex: number } | null>(null);
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const exportCardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -864,8 +868,8 @@ export default function App() {
     await waitForExportAssets(el);
     const blob = await toBlob(el, {
       pixelRatio: 1,
-      width: 1242,
-      height: 1660,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
     });
     if (!blob) throw new Error('导出图片失败，请重试');
     const url = URL.createObjectURL(blob);
@@ -910,6 +914,21 @@ export default function App() {
     } finally {
       setRenderExportCards(false);
       setIsExporting(false);
+    }
+  };
+
+  const handleConfirmExport = async () => {
+    if (!exportPreview) return;
+    try {
+      if (exportPreview.mode === 'all') {
+        await exportImages();
+      } else {
+        await exportSingleCard(exportPreview.cardIndex);
+      }
+      setExportPreview(null);
+    } catch (error: any) {
+      setErrorMsg({ title: '导出失败', detail: error.message || '请重试' });
+      window.setTimeout(() => setErrorMsg(null), 4000);
     }
   };
 
@@ -1459,30 +1478,22 @@ export default function App() {
             <TweetCard
               key={`export-${card.id}`}
               ref={el => (exportCardRefs.current[i] = el)}
-              cardIndex={i}
-              index={i + 1}
-              total={activeDoc.cards.length}
-              title={card.title}
-              subtitle={card.subtitle}
-              hookText={card.hookText}
-              content={card.content}
-              isCover={card.isCover}
-              layout={card.layout}
-              listItems={card.listItems}
-              terminalLines={card.terminalLines}
-              gridItems={card.gridItems}
-              blocks={card.blocks}
-              blockImages={card.blocks?.map(b => b.type === 'image' ? (b.imageData || (b.imageIndex !== undefined ? activeDoc.images[b.imageIndex] : undefined)) : undefined)}
-              coverTags={card.isCover ? activeDoc.tags : undefined}
-              fieldFormatting={card.fieldFormatting}
-              image={card.imageData || (card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined)}
-              image2={card.image2Data || (card.imageIndex2 !== undefined ? activeDoc.images[card.imageIndex2] : undefined)}
-              authorInfo={activeDoc.authorInfo}
-              generatedAt={activeDoc.generatedAt || Date.now()}
-              editable={false}
+              {...buildCardRenderProps(card, activeDoc, i, activeDoc.cards.length)}
             />
           ))}
         </div>
+      )}
+
+      {activeDoc && exportPreview && (
+        <ExportPreviewModal
+          cards={activeDoc.cards}
+          doc={activeDoc}
+          mode={exportPreview.mode}
+          cardIndex={exportPreview.mode === 'single' ? exportPreview.cardIndex : undefined}
+          isExporting={isExporting}
+          onClose={() => { if (!isExporting) setExportPreview(null); }}
+          onConfirm={handleConfirmExport}
+        />
       )}
 
       <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0 select-none">
@@ -1537,7 +1548,7 @@ export default function App() {
           )}
           {activeDoc && (
             <button
-              onClick={exportImages}
+              onClick={() => setExportPreview({ mode: 'all' })}
               className="px-6 py-2 bg-brand text-white text-sm font-bold rounded-full hover:bg-brand-hover shadow-lg shadow-brand/15 transition-all flex items-center gap-2 active:scale-95"
             >
               <Download className="w-4 h-4" />
@@ -1921,32 +1932,12 @@ export default function App() {
               <div className="flex flex-col gap-12 items-center">
               {activeDoc.cards.map((card, i) => (
                 <div key={card.id} className="flex flex-col items-center gap-4 group">
-                  <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{ width: '434px', height: '581px' }}>
-                    <div className="absolute top-0 left-0 w-[1242px] h-[1660px] origin-top-left" style={{ transform: 'scale(0.35)' }}>
+                  <div className="relative overflow-hidden rounded-2xl shadow-[0_32px_64px_-15px_rgba(0,0,0,0.1)] border border-white/50 ring-1 ring-black/5" style={{ width: CARD_WIDTH * EDITOR_PREVIEW_SCALE, height: CARD_HEIGHT * EDITOR_PREVIEW_SCALE }}>
+                    <div className="absolute top-0 left-0 origin-top-left" style={{ width: CARD_WIDTH, height: CARD_HEIGHT, transform: `scale(${EDITOR_PREVIEW_SCALE})` }}>
                       <TweetCard
                         ref={el => (cardRefs.current[i] = el)}
-                        cardIndex={i}
-                        index={i + 1}
-                        total={activeDoc.cards.length}
-                        title={card.title}
-                        subtitle={card.subtitle}
-                        hookText={card.hookText}
-                        content={card.content}
-                        isCover={card.isCover}
-                        layout={card.layout}
-                        listItems={card.listItems}
-                        terminalLines={card.terminalLines}
-                        gridItems={card.gridItems}
-                        blocks={card.blocks}
-                        blockImages={card.blocks?.map(b => b.type === 'image' ? (b.imageData || (b.imageIndex !== undefined ? activeDoc.images[b.imageIndex] : undefined)) : undefined)}
-                        coverTags={card.isCover ? activeDoc.tags : undefined}
-                        fieldFormatting={card.fieldFormatting}
-                        image={card.imageData || (card.imageIndex !== undefined ? activeDoc.images[card.imageIndex] : undefined)}
-                        image2={card.image2Data || (card.imageIndex2 !== undefined ? activeDoc.images[card.imageIndex2] : undefined)}
-                        authorInfo={activeDoc.authorInfo}
-                        generatedAt={activeDoc.generatedAt || Date.now()}
+                        {...buildCardRenderProps(card, activeDoc, i, activeDoc.cards.length, { editable: !isExporting })}
                         className="scale-100"
-                        editable={!isExporting}
                         activeEditor={activeEditor}
                         editingValue={editingValue}
                         onEditingValueChange={updateEditingValue}
@@ -2014,7 +2005,7 @@ export default function App() {
                         <option value="grid">网格</option>
                       </select>
                     )}
-                    <button onClick={() => exportSingleCard(i)} disabled={isExporting} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1 disabled:opacity-40">
+                    <button onClick={() => setExportPreview({ mode: 'single', cardIndex: i })} disabled={isExporting} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1 disabled:opacity-40">
                       <Download className="w-3 h-3" />
                       <span>导出此卡</span>
                     </button>
