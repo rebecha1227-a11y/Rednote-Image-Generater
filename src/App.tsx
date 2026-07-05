@@ -434,7 +434,7 @@ export default function App() {
         patch,
       );
       return card;
-    });
+    }, { pushHistory: false });
   };
 
   const activeFieldFormatting = activeEditor && editorDoc
@@ -572,14 +572,78 @@ export default function App() {
     setSelectionContext(null);
   };
 
-  const applyCardUpdate = (cardIndex: number, updater: (card: CardData, doc: EditorDoc) => CardData) => {
+  const applyCardUpdate = (
+    cardIndex: number,
+    updater: (card: CardData, doc: EditorDoc) => CardData,
+    options?: { pushHistory?: boolean },
+  ) => {
     const currentDoc = editorDocRef.current;
     if (!currentDoc) return;
     const nextDoc = cloneDoc(currentDoc);
     const previousCard = cloneDoc(nextDoc.cards[cardIndex]);
     nextDoc.cards[cardIndex] = updater(cloneDoc(nextDoc.cards[cardIndex]), nextDoc);
     nextDoc.updatedAt = Date.now();
-    replaceDoc(nextDoc, true, previousCard);
+    const pushHistory = options?.pushHistory !== false;
+    replaceDoc(nextDoc, pushHistory, pushHistory ? previousCard : undefined);
+  };
+
+  const createEmptyCard = (layout: CardLayout = 'text'): CardData => ({
+    id: createCardId(Date.now()),
+    title: '新卡片标题',
+    content: layout === 'list' ? '要点：' : '',
+    layout,
+    listItems: layout === 'list' ? ['要点一', '要点二'] : undefined,
+    terminalLines: layout === 'terminal' ? [{ type: 'command', text: 'npm run dev' }] : undefined,
+    gridItems: layout === 'grid' ? [{ name: '/cmd', desc: '描述' }] : undefined,
+    blocks: layout === 'text' ? [{ type: 'text', text: '在这里写正文' }] : undefined,
+  });
+
+  const handleAddCard = (afterIndex: number) => {
+    if (!activeDoc) return;
+    const nextDoc = cloneDoc(activeDoc);
+    nextDoc.cards.splice(afterIndex + 1, 0, createEmptyCard('text'));
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc);
+  };
+
+  const handleDeleteCard = (cardIndex: number) => {
+    if (!activeDoc) return;
+    if (activeDoc.cards.length <= 1) {
+      setErrorMsg({ title: '无法删除', detail: '至少需要保留一张卡片。' });
+      window.setTimeout(() => setErrorMsg(null), 3000);
+      return;
+    }
+    if (activeDoc.cards[cardIndex]?.isCover) {
+      setErrorMsg({ title: '无法删除封面', detail: '封面卡片不能删除，你可以直接修改封面内容。' });
+      window.setTimeout(() => setErrorMsg(null), 3000);
+      return;
+    }
+    const nextDoc = cloneDoc(activeDoc);
+    nextDoc.cards.splice(cardIndex, 1);
+    nextDoc.updatedAt = Date.now();
+    replaceDoc(nextDoc);
+    setActiveEditor(null);
+  };
+
+  const handleChangeCardLayout = (cardIndex: number, layout: CardLayout) => {
+    if (!activeDoc || activeDoc.cards[cardIndex]?.isCover) return;
+    applyCardUpdate(cardIndex, card => {
+      card.layout = layout;
+      card.isCover = false;
+      if (layout === 'list' && (!card.listItems || card.listItems.length === 0)) {
+        card.listItems = ['要点一', '要点二'];
+      }
+      if (layout === 'terminal' && (!card.terminalLines || card.terminalLines.length === 0)) {
+        card.terminalLines = [{ type: 'command', text: 'npm run dev' }];
+      }
+      if (layout === 'grid' && (!card.gridItems || card.gridItems.length === 0)) {
+        card.gridItems = [{ name: '/cmd', desc: '描述' }];
+      }
+      if (layout === 'text' && (!card.blocks || card.blocks.length === 0) && !card.content.trim()) {
+        card.blocks = [{ type: 'text', text: '在这里写正文' }];
+      }
+      return card;
+    });
   };
 
   const handleAuthorUpdate = (patch: Partial<AuthorInfo>) => {
@@ -624,6 +688,36 @@ export default function App() {
     setSelectionContext(null);
     setAiCommentDraft('');
     idbSet('drafts', 'latest', { doc: nextDoc, globalPast: [cloneDoc(nextDoc)], globalFuture: [], cardHistory: initialSnapshots } satisfies DraftPayload).catch(console.error);
+  };
+
+  const showGenerateWarnings = (warnings?: string[]) => {
+    if (!warnings?.length) return;
+    setSuccessMsg({
+      title: '生成完成（有提示）',
+      detail: warnings.join(' '),
+    });
+    window.setTimeout(() => setSuccessMsg(null), 7000);
+  };
+
+  const applyGeneratePayload = (data: Record<string, unknown>) => {
+    if (data.error) {
+      setErrorMsg({
+        title: String(data.error),
+        detail: typeof data.details === 'string' ? data.details : '由于 API 限制，生成未能成功',
+      });
+      return false;
+    }
+    const nextResult = data as Omit<ResultData, 'cards'> & { cards: BaseCardData[]; warnings?: string[] };
+    const nextDoc = normalizeResultToEditorDoc(nextResult, images, authorInfo);
+    setResult(denormalizeEditorDoc(nextDoc));
+    syncEditorDocState(nextDoc);
+    setGlobalPast([]);
+    setGlobalFuture([]);
+    setCardHistory({});
+    setActiveEditor(null);
+    setSelectionContext(null);
+    showGenerateWarnings(nextResult.warnings);
+    return true;
   };
 
   const handleGenerate = async () => {
@@ -732,19 +826,7 @@ export default function App() {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.error) {
-                setErrorMsg({ title: data.error, detail: data.details || '由于 API 限制，生成未能成功' });
-                return;
-              }
-              const nextResult = data as Omit<ResultData, 'cards'> & { cards: BaseCardData[] };
-              const nextDoc = normalizeResultToEditorDoc(nextResult, images, authorInfo);
-              setResult(denormalizeEditorDoc(nextDoc));
-              syncEditorDocState(nextDoc);
-              setGlobalPast([]);
-              setGlobalFuture([]);
-              setCardHistory({});
-              setActiveEditor(null);
-              setSelectionContext(null);
+              if (!applyGeneratePayload(data)) return;
               return;
             } catch (_) {}
           }
@@ -753,16 +835,8 @@ export default function App() {
 
       try {
         const data = JSON.parse(chunk);
-        if (data.error) {
-          setErrorMsg({ title: data.error, detail: data.details || '生成失败' });
-        } else {
-          const nextResult = data as Omit<ResultData, 'cards'> & { cards: BaseCardData[] };
-          const nextDoc = normalizeResultToEditorDoc(nextResult, images, authorInfo);
-          setResult(denormalizeEditorDoc(nextDoc));
-          syncEditorDocState(nextDoc);
-          setGlobalPast([]);
-          setGlobalFuture([]);
-          setCardHistory({});
+        if (!applyGeneratePayload(data) && !data.error) {
+          setErrorMsg({ title: '生成失败', detail: '服务器响应异常，请重试' });
         }
       } catch (_) {
         setErrorMsg({ title: '生成失败', detail: '服务器响应异常，请重试' });
@@ -1375,7 +1449,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden select-none">
+    <div className="h-screen bg-gray-50 flex flex-col font-sans text-gray-900 overflow-hidden">
       <input ref={cardImageInputRef} type="file" accept="image/*" className="fixed left-0 top-0 h-px w-px opacity-0" tabIndex={-1} aria-hidden="true" onChange={handleCardImageChosen} />
       <input ref={avatarInputRef} type="file" accept="image/*" className="fixed left-0 top-0 h-px w-px opacity-0" tabIndex={-1} aria-hidden="true" onChange={handleAvatarChosen} />
 
@@ -1411,7 +1485,7 @@ export default function App() {
         </div>
       )}
 
-      <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0">
+      <nav className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between z-10 shrink-0 select-none">
         <div className="flex flex-col">
           <span className="font-script text-3xl tracking-tight drop-shadow-sm leading-none text-brand">LittleRedNote Image Generator</span>
           <span className="font-script text-sm tracking-widest mt-0.5 opacity-60 ml-1 text-brand">@Jinger</span>
@@ -1917,6 +1991,29 @@ export default function App() {
                       <Redo2 className="w-3 h-3" />
                       <span>单卡恢复</span>
                     </button>
+                    <button onClick={() => handleAddCard(i)} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1">
+                      <Plus className="w-3 h-3" />
+                      <span>加一页</span>
+                    </button>
+                    {!card.isCover && (
+                      <button onClick={() => handleDeleteCard(i)} className="px-3 py-1 rounded-lg border border-red-200 bg-white text-[10px] font-bold text-red-500 flex items-center gap-1">
+                        <Trash2 className="w-3 h-3" />
+                        <span>删此卡</span>
+                      </button>
+                    )}
+                    {!card.isCover && (
+                      <select
+                        value={card.layout || 'text'}
+                        onChange={e => handleChangeCardLayout(i, e.target.value as CardLayout)}
+                        className="px-2 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-600 outline-none"
+                        title="切换卡片布局"
+                      >
+                        <option value="text">文本</option>
+                        <option value="list">列表</option>
+                        <option value="terminal">终端</option>
+                        <option value="grid">网格</option>
+                      </select>
+                    )}
                     <button onClick={() => exportSingleCard(i)} disabled={isExporting} className="px-3 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-500 flex items-center gap-1 disabled:opacity-40">
                       <Download className="w-3 h-3" />
                       <span>导出此卡</span>

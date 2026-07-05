@@ -6,8 +6,14 @@ import { twMerge } from 'tailwind-merge';
 import type { CardEditorField, ContentBlock } from '../types/cardEditor';
 import {
   buildFieldStyle,
+  computeFontSizePx,
   resolveFieldFormatting,
 } from '../lib/fieldFormatting';
+import {
+  getRichTextPartClassName,
+  getRichTextPartStyle,
+  splitRichTextParagraph,
+} from '../lib/richText';
 
 export type { CardEditorField, ContentBlock } from '../types/cardEditor';
 
@@ -133,28 +139,26 @@ function IconShare() {
   );
 }
 
-function renderRichText(text: string) {
+function renderRichText(text: string, forceColor?: string) {
   const paragraphs = text.split('\n');
   return paragraphs.map((para, pIdx) => {
-    const parts = para.split(/(<highlight>.*?<\/highlight>|<tag>.*?<\/tag>|\*\*.*?\*\*|\*.*?\*)/g).filter(Boolean);
-    const elements = parts.map((part, index) => {
-      const highlightMatch = part.match(/^<highlight>(.*?)<\/highlight>$/);
-      if (highlightMatch) {
-        return <span key={index} className="bg-[linear-gradient(to_top,#fef08a_40%,transparent_40%)]">{highlightMatch[1]}</span>;
+    const elements = splitRichTextParagraph(para).map((part, index) => {
+      const className = getRichTextPartClassName(part.kind, forceColor);
+      const style = getRichTextPartStyle(part.kind, forceColor);
+      if (part.kind === 'bold') {
+        return <strong key={index} className={className} style={style}>{part.text}</strong>;
       }
-      const tagMatch = part.match(/^<tag>(.*?)<\/tag>$/);
-      if (tagMatch) {
-        return <span key={index} className="text-[#1d9bf0] font-semibold">{tagMatch[1]}</span>;
+      if (part.kind === 'italic') {
+        return <em key={index} style={style}>{part.text}</em>;
       }
-      const boldMatch = part.match(/^\*\*(.*?)\*\*$/);
-      if (boldMatch) {
-        return <strong key={index} className="font-black">{boldMatch[1]}</strong>;
+      if (part.kind === 'plain') {
+        return <React.Fragment key={index}>{part.text}</React.Fragment>;
       }
-      const italicMatch = part.match(/^\*(.*?)\*$/);
-      if (italicMatch) {
-        return <em key={index}>{italicMatch[1]}</em>;
-      }
-      return <React.Fragment key={index}>{part}</React.Fragment>;
+      return (
+        <span key={index} className={className || undefined} style={style}>
+          {part.text}
+        </span>
+      );
     });
     return <div key={pIdx} className={pIdx > 0 ? 'mt-6' : ''}>{elements}</div>;
   });
@@ -222,8 +226,9 @@ function renderEditableText(field: CardEditorField, value: string, className: st
   const fmt = resolveFieldFormatting(helpers.fieldFormatting, field, itemIndex);
   const mergedStyle = buildFieldStyle(field, fmt, style, fontBasePx);
   const isEditing = !!helpers.activeEditor && helpers.activeEditor.field === field && helpers.activeEditor.itemIndex === itemIndex;
+  const richText = renderRichText(value || '点击编辑', fmt?.color);
   if (!helpers.editable) {
-    return <div className={cn(className, 'whitespace-pre-wrap')} style={mergedStyle}>{renderRichText(value)}</div>;
+    return <div className={cn(className, 'whitespace-pre-wrap')} style={mergedStyle}>{renderRichText(value, fmt?.color)}</div>;
   }
   if (isEditing) {
     return (
@@ -241,14 +246,14 @@ function renderEditableText(field: CardEditorField, value: string, className: st
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
           if (e.key === 'Escape') helpers.onCancelEdit?.();
         }}
-        className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none whitespace-pre-wrap')}
+        className={cn(className, 'rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none whitespace-pre-wrap select-text')}
         style={mergedStyle}
       />
     );
   }
   return (
     <div
-      className={cn(className, 'cursor-text whitespace-pre-wrap hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
+      className={cn(className, 'cursor-text whitespace-pre-wrap select-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
       style={mergedStyle}
       onClick={e => {
         const el = e.currentTarget as HTMLDivElement;
@@ -258,7 +263,7 @@ function renderEditableText(field: CardEditorField, value: string, className: st
       }}
       onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, field, helpers.onSelectText, itemIndex)}
     >
-      {renderRichText(value || '点击编辑')}
+      {richText}
     </div>
   );
 }
@@ -528,11 +533,20 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
               case 'prompt': colorClass = 'text-[#a6e3a1]'; break;
               default: colorClass = 'text-[#6c7086]';
             }
+            const fmt = resolveFieldFormatting(helpers.fieldFormatting, 'terminalLine', i);
+            const lineStyle: React.CSSProperties = {
+              ...(fmt?.color ? { color: fmt.color } : {}),
+              ...(computeFontSizePx('terminalLine', fmt?.fontSize) ? { fontSize: computeFontSizePx('terminalLine', fmt?.fontSize) } : {}),
+              ...(fmt?.textAlign ? { textAlign: fmt.textAlign as React.CSSProperties['textAlign'] } : {}),
+            };
+            const isEditing = helpers.activeEditor?.field === 'terminalLine' && helpers.activeEditor?.itemIndex === i;
             return (
               <div
                 key={i}
-                className={colorClass}
+                className={cn(!fmt?.color && colorClass, isEditing ? '' : 'cursor-text select-text')}
+                style={Object.keys(lineStyle).length > 0 ? lineStyle : undefined}
                 onClick={e => {
+                  if (isEditing) return;
                   const el = e.currentTarget as HTMLDivElement;
                   if (selectionHandledElements.has(el)) return;
                   if (hasTextSelectionWithin(el)) return;
@@ -540,7 +554,7 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
                 }}
                 onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, 'terminalLine', helpers.onSelectText, i)}
               >
-                {helpers.activeEditor?.field === 'terminalLine' && helpers.activeEditor?.itemIndex === i ? (
+                {isEditing ? (
                   <textarea
                     autoFocus
                     data-card-editor-active="true"
@@ -555,10 +569,11 @@ function renderTerminal(ctx: RenderCtx, helpers: EditHelpers) {
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
                       if (e.key === 'Escape') helpers.onCancelEdit?.();
                     }}
-                    className="w-full rounded-lg border border-[#89b4fa] bg-[#11111b] p-2 outline-none resize-none"
+                    className="w-full rounded-lg border border-[#89b4fa] bg-[#11111b] p-2 outline-none resize-none select-text"
+                    style={lineStyle}
                   />
                 ) : (
-                  <span className="cursor-text">{prefix}{line.text}</span>
+                  <span>{prefix}{line.text}</span>
                 )}
               </div>
             );

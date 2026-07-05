@@ -10,6 +10,7 @@ import OpenAI from "openai";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { createServer as createViteServer } from "vite";
+import { buildGenerationWarnings } from "./src/lib/generationWarnings.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -115,7 +116,7 @@ async function fetchUrlContent(url: string): Promise<string> {
     };
     const response = await axios.get(parsed.toString(), {
       timeout: 8000,
-      maxRedirects: 0,
+      maxRedirects: 3,
       httpAgent: new http.Agent({ lookup }),
       httpsAgent: new https.Agent({ lookup }),
       headers: {
@@ -327,13 +328,22 @@ async function startServer() {
       const { prompt: userPrompt, images, links, config } = req.body;
 
       let scrapedContext = "";
-      if (links && Array.isArray(links) && links.length > 0) {
-        const contents = await Promise.all(links.map(link => {
-          if (!link || typeof link !== "string") return Promise.resolve("");
-          return fetchUrlContent(link);
-        }));
-        scrapedContext = contents.filter(c => c).map((c, i) => `参考来源 ${i + 1} (${links[i]}):\n${c}`).join("\n\n");
+      const validLinks = (links && Array.isArray(links) ? links : []).filter(
+        (link): link is string => typeof link === "string" && link.trim().startsWith("http")
+      );
+      let scrapedContents: string[] = [];
+      if (validLinks.length > 0) {
+        scrapedContents = await Promise.all(validLinks.map(link => fetchUrlContent(link)));
+        scrapedContext = scrapedContents.filter(c => c).map((c, i) => `参考来源 ${i + 1} (${validLinks[i]}):\n${c}`).join("\n\n");
       }
+
+      const modelName = config?.model || process.env.OPENAI_MODEL_NAME || "gpt-4o";
+      const generationWarnings = buildGenerationWarnings({
+        links: validLinks,
+        scrapedContents,
+        imageCount: Array.isArray(images) ? images.length : 0,
+        modelName,
+      });
 
       const finalPrompt = `
       参考资料:
@@ -349,13 +359,18 @@ async function startServer() {
       const text = await generateText(config, finalPrompt, images);
 
       try {
-        sendResult(JSON.parse(text));
+        const parsed = JSON.parse(text);
+        sendResult({
+          ...parsed,
+          ...(generationWarnings.length > 0 ? { warnings: generationWarnings } : {}),
+        });
       } catch (parseError) {
         console.error("JSON Parse Error:", text);
         sendResult({
           caption: "生成成功（非标准格式）",
           cards: [{ title: "笔记内容", content: text }],
-          tags: []
+          tags: [],
+          ...(generationWarnings.length > 0 ? { warnings: generationWarnings } : {}),
         });
       }
     } catch (error: any) {
