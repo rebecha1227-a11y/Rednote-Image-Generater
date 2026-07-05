@@ -3,19 +3,17 @@ import { MoreHorizontal, Sparkles, ImagePlus, UserRound, Plus, Trash2 } from 'lu
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+import type { CardEditorField, ContentBlock } from '../types/cardEditor';
+import {
+  buildFieldStyle,
+  resolveFieldFormatting,
+} from '../lib/fieldFormatting';
+
+export type { CardEditorField, ContentBlock } from '../types/cardEditor';
+
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-
-export type CardEditorField = 'title' | 'subtitle' | 'hookText' | 'content' | 'listItem' | 'terminalLine' | 'gridName' | 'gridDesc' | 'blockText';
-
-export type ContentBlock = {
-  type: 'text' | 'image';
-  text?: string;
-  imageIndex?: number;
-  imageData?: string;
-  imageHeight?: number;
-};
 
 type CardProps = {
   cardIndex?: number;
@@ -191,13 +189,6 @@ function handleSelectionOnMouseUp(
   onSelectText?.(field, selected, itemIndex);
 }
 
-const FONT_SIZE_MAP: Record<string, string> = {
-  s: '24px',
-  m: '32px',
-  l: '44px',
-  xl: '58px',
-};
-
 export function getAdaptiveImageBlockHeight(ctx: RenderCtx) {
   const blocks = ctx.blocks;
   if (!blocks || blocks.length === 0) return 320;
@@ -227,14 +218,9 @@ export function getAdaptiveImageBlockHeight(ctx: RenderCtx) {
   return Math.max(180, Math.min(420, height));
 }
 
-function renderEditableText(field: CardEditorField, value: string, className: string, style: React.CSSProperties, helpers: EditHelpers, itemIndex?: number) {
-  const fmt = helpers.fieldFormatting?.[field];
-  const mergedStyle: React.CSSProperties = {
-    ...style,
-    ...(fmt?.color ? { color: fmt.color } : {}),
-    ...(fmt?.textAlign ? { textAlign: fmt.textAlign as React.CSSProperties['textAlign'] } : {}),
-    ...(fmt?.fontSize ? { fontSize: FONT_SIZE_MAP[fmt.fontSize] } : {}),
-  };
+function renderEditableText(field: CardEditorField, value: string, className: string, style: React.CSSProperties, helpers: EditHelpers, itemIndex?: number, fontBasePx?: number) {
+  const fmt = resolveFieldFormatting(helpers.fieldFormatting, field, itemIndex);
+  const mergedStyle = buildFieldStyle(field, fmt, style, fontBasePx);
   const isEditing = !!helpers.activeEditor && helpers.activeEditor.field === field && helpers.activeEditor.itemIndex === itemIndex;
   if (!helpers.editable) {
     return <div className={cn(className, 'whitespace-pre-wrap')} style={mergedStyle}>{renderRichText(value)}</div>;
@@ -281,7 +267,7 @@ function renderCover(ctx: RenderCtx, helpers: EditHelpers) {
   const { title, subtitle, hookText, image, image2, coverTags } = ctx;
   return (
     <div className="flex flex-col h-full" style={{ justifyContent: 'flex-start', gap: 0 }}>
-      {renderEditableText('title', title, 'text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2', { letterSpacing: '-0.04em', lineHeight: 1.15 }, helpers)}
+      {renderEditableText('title', title, 'text-[88px] font-black text-[#0f1419] leading-none tracking-tighter mb-2', { letterSpacing: '-0.04em', lineHeight: 1.15 }, helpers, undefined, 88)}
       {renderEditableText('subtitle', subtitle || '', 'text-[30px] text-[#536471] mt-4 leading-snug', {}, helpers)}
 
       <div className="relative w-full mt-7" style={{ height: '580px' }}>
@@ -390,7 +376,6 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
   return (
     <div className={cn('flex flex-col gap-5 flex-1 min-h-0', helpers.editable ? 'overflow-visible' : 'overflow-hidden')}>
       {blocks && blocks.map((block, i) => {
-        const isEditingThis = helpers.activeEditor?.field === 'blockText' && helpers.activeEditor?.itemIndex === i;
         if (block.type === 'image') {
           const imgSrc = ctx.blockImages?.[i];
           const blockHeight = block.imageHeight || imageBlockHeight;
@@ -435,38 +420,13 @@ function renderBlockSequence(ctx: RenderCtx, helpers: EditHelpers) {
         }
         return (
           <div key={i} className="relative group/block">
-            {isEditingThis ? (
-              <textarea
-                autoFocus
-                data-card-editor-active="true"
-                value={helpers.editingValue || ''}
-                onChange={e => helpers.onEditingValueChange?.(e.target.value)}
-                onBlur={e => {
-                  const next = e.relatedTarget as HTMLElement | null;
-                  if (next?.closest('[data-editor-toolbar="true"]')) return;
-                  helpers.onCommitEdit?.();
-                }}
-                onKeyDown={e => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') helpers.onCommitEdit?.();
-                  if (e.key === 'Escape') helpers.onCancelEdit?.();
-                }}
-                className="w-full rounded-2xl border-2 border-[#1d9bf0] bg-white/95 p-3 outline-none resize-none text-[36px] text-[#0f1419]"
-                style={{ lineHeight: 1.65 }}
-              />
-            ) : (
-              <div
-                className={cn('text-[36px] text-[#0f1419]', helpers.editable && 'cursor-text hover:ring-2 hover:ring-[#1d9bf0]/20 hover:rounded-2xl transition-all')}
-                style={{ lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' }}
-                onClick={e => {
-                  const el = e.currentTarget as HTMLDivElement;
-                  if (selectionHandledElements.has(el)) return;
-                  if (hasTextSelectionWithin(el)) return;
-                  helpers.onStartEdit?.('blockText', i, el.getBoundingClientRect());
-                }}
-                onMouseUp={e => handleSelectionOnMouseUp(e.currentTarget as HTMLDivElement, 'blockText', helpers.onSelectText, i)}
-              >
-                {renderRichText(block.text || '点击编辑')}
-              </div>
+            {renderEditableText(
+              'blockText',
+              block.text || '',
+              cn('w-full', 'text-[36px] text-[#0f1419]'),
+              { lineHeight: 1.65, wordBreak: 'keep-all', overflowWrap: 'break-word' },
+              helpers,
+              i,
             )}
             {helpers.editable && (
               <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover/block:opacity-100 transition-opacity">

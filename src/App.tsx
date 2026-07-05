@@ -18,14 +18,14 @@ import {
 } from 'lucide-react';
 import Cropper, { type Area } from 'react-easy-crop';
 import { TweetCard, getAdaptiveImageBlockHeight, type CardEditorField, type ContentBlock } from './components/TweetCard';
+import {
+  type FieldFormatting,
+  resolveFieldFormatting,
+  patchFieldFormatting,
+  DEFAULT_TEXT_COLOR,
+} from './lib/fieldFormatting';
 
 type CardLayout = 'cover' | 'text' | 'list' | 'terminal' | 'grid';
-
-type FieldFormatting = {
-  fontSize?: 's' | 'm' | 'l' | 'xl';
-  color?: string;
-  textAlign?: 'left' | 'center' | 'right';
-};
 
 type BaseCardData = {
   title: string;
@@ -319,6 +319,7 @@ export default function App() {
   const [editorAnchorRect, setEditorAnchorRect] = useState<DOMRect | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [renderExportCards, setRenderExportCards] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const exportCardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -418,6 +419,31 @@ export default function App() {
   React.useEffect(() => {
     if (!selectionContext) setShowAiRewritePanel(false);
   }, [selectionContext]);
+
+  React.useEffect(() => {
+    setShowColorPicker(false);
+  }, [activeEditor?.cardIndex, activeEditor?.field, activeEditor?.itemIndex]);
+
+  const applyActiveFormatting = (patch: Partial<FieldFormatting>) => {
+    if (!activeEditor) return;
+    applyCardUpdate(activeEditor.cardIndex, card => {
+      card.fieldFormatting = patchFieldFormatting(
+        card.fieldFormatting,
+        activeEditor.field,
+        activeEditor.itemIndex,
+        patch,
+      );
+      return card;
+    });
+  };
+
+  const activeFieldFormatting = activeEditor && editorDoc
+    ? resolveFieldFormatting(
+        editorDoc.cards[activeEditor.cardIndex]?.fieldFormatting,
+        activeEditor.field,
+        activeEditor.itemIndex,
+      )
+    : undefined;
 
   React.useEffect(() => {
     editingValueRef.current = editingValue;
@@ -2022,11 +2048,16 @@ export default function App() {
               <div className="w-px h-6 bg-gray-200 mx-1" />
 
               <select
-                value={(() => { const f = editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]; return f?.fontSize || 'm'; })()}
-                onChange={e => { if (!editorDoc) return; const v = e.target.value as FieldFormatting['fontSize']; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.fontSize = v; return card; }); }}
+                value={activeFieldFormatting?.fontSize || ''}
+                onMouseDown={e => e.preventDefault()}
+                onChange={e => {
+                  const v = e.target.value as FieldFormatting['fontSize'] | '';
+                  applyActiveFormatting({ fontSize: v || undefined });
+                }}
                 className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 outline-none bg-white"
                 title="字号"
               >
+                <option value="">默认</option>
                 <option value="s">小</option>
                 <option value="m">中</option>
                 <option value="l">大</option>
@@ -2035,37 +2066,56 @@ export default function App() {
 
               <div className="w-px h-6 bg-gray-200 mx-1" />
 
-              {/* 颜色色板 */}
-              <div className="relative group">
-                <button className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-[16px]" title="文字颜色">🎨</button>
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex bg-white rounded-xl shadow-2xl border border-gray-200 p-2 gap-1">
-                  {['#0f1419','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#6b7280','#ffffff'].map(c => (
-                    <button
-                      key={c}
-                      onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.color = c === '#0f1419' ? undefined : c; return card; }); }}
-                      className="w-6 h-6 rounded-full border border-gray-200 shrink-0 hover:scale-125 transition-transform"
-                      style={{ backgroundColor: c, borderColor: c === '#ffffff' ? '#d1d5db' : undefined }}
-                      title={c}
-                    />
-                  ))}
-                </div>
+              <div className="relative">
+                <button
+                  type="button"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => setShowColorPicker(v => !v)}
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center text-[16px] ${showColorPicker ? 'bg-brand/10' : 'hover:bg-gray-100'}`}
+                  title="文字颜色"
+                  aria-expanded={showColorPicker}
+                >🎨</button>
+                {showColorPicker && (
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex bg-white rounded-xl shadow-2xl border border-gray-200 p-2 gap-1 z-[110]">
+                    {['#0f1419','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#6b7280','#ffffff'].map(c => (
+                      <button
+                        key={c}
+                        type="button"
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => {
+                          applyActiveFormatting({ color: c === DEFAULT_TEXT_COLOR ? undefined : c });
+                          setShowColorPicker(false);
+                        }}
+                        className="w-6 h-6 rounded-full border border-gray-200 shrink-0 hover:scale-125 transition-transform"
+                        style={{ backgroundColor: c, borderColor: c === '#ffffff' ? '#d1d5db' : undefined }}
+                        title={c}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="w-px h-6 bg-gray-200 mx-1" />
 
               <button
-                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'left'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'left' || !editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => applyActiveFormatting({ textAlign: 'left' })}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${activeFieldFormatting?.textAlign === 'left' || !activeFieldFormatting?.textAlign ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="左对齐"
               >≡</button>
               <button
-                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'center'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'center' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => applyActiveFormatting({ textAlign: 'center' })}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${activeFieldFormatting?.textAlign === 'center' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="居中"
               >≡</button>
               <button
-                onClick={() => { if (!editorDoc) return; applyCardUpdate(activeEditor.cardIndex, card => { if (!card.fieldFormatting) card.fieldFormatting = {}; if (!card.fieldFormatting[activeEditor.field]) card.fieldFormatting[activeEditor.field] = {}; card.fieldFormatting[activeEditor.field]!.textAlign = 'right'; return card; }); }}
-                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${editorDoc?.cards?.[activeEditor.cardIndex]?.fieldFormatting?.[activeEditor.field]?.textAlign === 'right' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => applyActiveFormatting({ textAlign: 'right' })}
+                className={`w-8 h-8 rounded-lg text-[12px] font-bold ${activeFieldFormatting?.textAlign === 'right' ? 'bg-brand text-white' : 'hover:bg-gray-100 text-gray-700'}`}
                 title="右对齐"
               >≡</button>
 
