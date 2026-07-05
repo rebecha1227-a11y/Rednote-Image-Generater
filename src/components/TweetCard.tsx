@@ -8,6 +8,7 @@ import {
   buildFieldStyle,
   computeFontSizePx,
   resolveFieldFormatting,
+  type FieldFormatting,
 } from '../lib/fieldFormatting';
 import {
   getRichTextPartClassName,
@@ -40,7 +41,7 @@ type CardProps = {
   blockImages?: (string | undefined)[];
   coverTags?: string[];
   generatedAt?: number;
-  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
+  fieldFormatting?: Record<string, FieldFormatting>;
   authorInfo?: {
     name: string;
     handle: string;
@@ -79,7 +80,7 @@ type RenderCtx = {
   blocks?: ContentBlock[];
   blockImages?: (string | undefined)[];
   coverTags?: string[];
-  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
+  fieldFormatting?: Record<string, FieldFormatting>;
 };
 
 type EditHelpers = {
@@ -96,7 +97,7 @@ type EditHelpers = {
   onAddBlock?: (type: 'text' | 'image', afterIndex: number) => void;
   onDeleteBlock?: (index: number) => void;
   onResizeImageBlock?: (index: number, delta: number) => void;
-  fieldFormatting?: Record<string, { fontSize?: string; color?: string; textAlign?: string }>;
+  fieldFormatting?: Record<string, FieldFormatting>;
 };
 
 function IconReply() {
